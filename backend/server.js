@@ -307,13 +307,19 @@ app.get('/api/orders', auth(), (req, res) => {
            ORDER BY o.created_at DESC`;
     params = [];
   } else if (req.user.role === 'driver') {
+    // Drivers see: 
+    // 1. All unassigned confirmed orders (available to pick up)
+    // 2. All orders assigned to them (regardless of status)
     sql = `SELECT o.*, u.name as customer_name, u.phone as customer_phone,
            a.street, a.house_number, a.postal_code, a.city, a.instructions
            FROM orders o 
            JOIN users u ON o.user_id = u.id 
            JOIN addresses a ON o.address_id = a.id
-           WHERE o.driver_id = ? OR (o.driver_id IS NULL AND o.status = 'confirmed')
-           ORDER BY o.created_at DESC`;
+           WHERE o.driver_id = ? 
+              OR (o.driver_id IS NULL AND o.status = 'confirmed')
+           ORDER BY 
+             CASE WHEN o.driver_id IS NULL AND o.status = 'confirmed' THEN 0 ELSE 1 END,
+             o.created_at DESC`;
     params = [req.user.id];
   } else {
     sql = `SELECT o.*, a.street, a.house_number, a.postal_code, a.city
@@ -384,7 +390,8 @@ app.post('/api/orders', auth(), (req, res) => {
   const total = subtotal + delivery_fee;
   const estimated = new Date(Date.now() + 20 * 60000).toISOString(); // 20 min
   
-  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  // Auto-confirm order (skip pending for now)
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?)`);
   const orderResult = orderStmt.run(req.user.id, address_id, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated);
   const orderId = orderResult.lastInsertRowid;
   
