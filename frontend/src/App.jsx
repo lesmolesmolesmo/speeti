@@ -18,13 +18,15 @@ import Driver from './pages/Driver';
 // Components
 import Navbar from './components/Navbar';
 import CartButton from './components/CartButton';
+import DesktopSidebar from './components/DesktopSidebar';
 
 function App() {
   const { user, token, fetchUser, fetchCategories } = useStore();
   const location = useLocation();
   
-  // Hide navbar on admin/driver pages
-  const hideNavbar = ['/admin', '/driver'].some(p => location.pathname.startsWith(p));
+  // Hide nav on admin/driver pages (they have their own layout)
+  const hideNav = ['/admin', '/driver'].some(p => location.pathname.startsWith(p));
+  const isFullscreenPage = ['/admin', '/driver', '/login'].some(p => location.pathname.startsWith(p));
 
   useEffect(() => {
     fetchCategories();
@@ -32,23 +34,36 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-20">
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/category/:slug" element={<Category />} />
-        <Route path="/search" element={<Search />} />
-        <Route path="/cart" element={<Cart />} />
-        <Route path="/checkout" element={user ? <Checkout /> : <Navigate to="/login?redirect=/checkout" />} />
-        <Route path="/orders" element={user ? <Orders /> : <Navigate to="/login?redirect=/orders" />} />
-        <Route path="/orders/:id" element={user ? <OrderDetail /> : <Navigate to="/login" />} />
-        <Route path="/profile" element={user ? <Profile /> : <Navigate to="/login?redirect=/profile" />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/admin/*" element={user?.role === 'admin' ? <Admin /> : <Navigate to="/login?redirect=/admin" />} />
-        <Route path="/driver/*" element={user?.role === 'driver' ? <Driver /> : <Navigate to="/login?redirect=/driver" />} />
-      </Routes>
+    <div className="min-h-screen bg-gray-50 flex">
+      {/* Desktop Sidebar - hidden on mobile and fullscreen pages */}
+      {!isFullscreenPage && <DesktopSidebar />}
+
+      {/* Main Content */}
+      <main className={`flex-1 ${!hideNav ? 'pb-20 lg:pb-0' : ''}`}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/category/:slug" element={<Category />} />
+          <Route path="/search" element={<Search />} />
+          <Route path="/cart" element={<Cart />} />
+          <Route path="/checkout" element={user ? <Checkout /> : <Navigate to="/login?redirect=/checkout" />} />
+          <Route path="/orders" element={user ? <Orders /> : <Navigate to="/login?redirect=/orders" />} />
+          <Route path="/orders/:id" element={user ? <OrderDetail /> : <Navigate to="/login" />} />
+          <Route path="/profile" element={user ? <Profile /> : <Navigate to="/login?redirect=/profile" />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/admin/*" element={user?.role === 'admin' ? <Admin /> : <Navigate to="/login?redirect=/admin" />} />
+          <Route path="/driver/*" element={user?.role === 'driver' ? <Driver /> : <Navigate to="/login?redirect=/driver" />} />
+        </Routes>
+      </main>
       
-      {!hideNavbar && <Navbar />}
-      {!hideNavbar && <CartButton />}
+      {/* Mobile Bottom Navigation - hidden on desktop and fullscreen pages */}
+      {!hideNav && (
+        <>
+          <div className="lg:hidden">
+            <Navbar />
+            <CartButton />
+          </div>
+        </>
+      )}
     </div>
   );
 }
