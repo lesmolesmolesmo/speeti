@@ -3,8 +3,10 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { generateInvoice, generateInvoiceNumber } = require('./invoice-generator');
 
 const app = express();
 const server = http.createServer(app);
@@ -155,6 +157,46 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT
   );
+
+  -- Invoices
+  CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL UNIQUE,
+    invoice_number TEXT NOT NULL UNIQUE,
+    invoice_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    net_total REAL NOT NULL,
+    tax_7_amount REAL DEFAULT 0,
+    tax_19_amount REAL DEFAULT 0,
+    gross_total REAL NOT NULL,
+    pdf_path TEXT,
+    sent_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+  );
+
+  -- Business Settings (for invoices)
+  CREATE TABLE IF NOT EXISTS business_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    company_name TEXT DEFAULT 'Speeti GmbH',
+    street TEXT DEFAULT 'Musterstraße 1',
+    postal_code TEXT DEFAULT '48149',
+    city TEXT DEFAULT 'Münster',
+    country TEXT DEFAULT 'Deutschland',
+    phone TEXT DEFAULT '+49 251 12345678',
+    email TEXT DEFAULT 'info@speeti.de',
+    website TEXT DEFAULT 'www.speeti.de',
+    tax_number TEXT,
+    vat_id TEXT,
+    registry TEXT,
+    bank_name TEXT,
+    iban TEXT,
+    bic TEXT,
+    logo_url TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Initialize business settings if empty
+  INSERT OR IGNORE INTO business_settings (id) VALUES (1);
 `);
 
 // Add new columns if they don't exist (for existing databases)
@@ -408,6 +450,9 @@ app.get('/api/orders/:id', auth(), (req, res) => {
     WHERE m.order_id = ? ORDER BY m.created_at
   `).all(order.id);
   
+  // Include invoice if exists
+  order.invoice = db.prepare('SELECT * FROM invoices WHERE order_id = ?').get(order.id);
+  
   res.json(order);
 });
 
@@ -470,6 +515,11 @@ app.patch('/api/orders/:id/status', auth(['admin', 'driver']), (req, res) => {
   db.prepare(update).run(...params);
   
   io.emit('order-update', { orderId: parseInt(req.params.id), status });
+  
+  // Auto-generate invoice when delivered
+  if (status === 'delivered') {
+    autoGenerateInvoice(parseInt(req.params.id)).catch(console.error);
+  }
   
   res.json({ success: true });
 });
@@ -906,6 +956,290 @@ app.put('/api/admin/settings', auth(['admin']), (req, res) => {
   });
   res.json({ success: true });
 });
+
+// ============ INVOICES ============
+
+// Get business settings
+app.get('/api/admin/business', auth(['admin']), (req, res) => {
+  const business = db.prepare('SELECT * FROM business_settings WHERE id = 1').get();
+  res.json(business || {});
+});
+
+// Update business settings
+app.put('/api/admin/business', auth(['admin']), (req, res) => {
+  const fields = ['company_name', 'street', 'postal_code', 'city', 'country', 'phone', 'email', 
+                  'website', 'tax_number', 'vat_id', 'registry', 'bank_name', 'iban', 'bic', 'logo_url'];
+  
+  const updates = fields.filter(f => req.body[f] !== undefined);
+  if (updates.length === 0) return res.json({ success: true });
+  
+  const sql = `UPDATE business_settings SET ${updates.map(f => `${f} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+  db.prepare(sql).run(...updates.map(f => req.body[f]));
+  
+  res.json({ success: true });
+});
+
+// Generate invoice for an order
+app.post('/api/orders/:id/invoice', auth(), async (req, res) => {
+  const orderId = parseInt(req.params.id);
+  
+  // Check if invoice already exists
+  const existingInvoice = db.prepare('SELECT * FROM invoices WHERE order_id = ?').get(orderId);
+  if (existingInvoice) {
+    return res.json({ invoice: existingInvoice, message: 'Rechnung existiert bereits' });
+  }
+  
+  // Get order with details
+  const order = db.prepare(`
+    SELECT o.*, u.name as customer_name, u.email as customer_email, u.phone as customer_phone,
+           a.street, a.house_number, a.postal_code, a.city
+    FROM orders o 
+    JOIN users u ON o.user_id = u.id 
+    JOIN addresses a ON o.address_id = a.id
+    WHERE o.id = ?
+  `).get(orderId);
+  
+  if (!order) return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+  
+  // Only owner or admin can generate invoice
+  if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Keine Berechtigung' });
+  }
+  
+  // Get order items with category for tax calculation
+  order.items = db.prepare(`
+    SELECT oi.*, p.name, p.unit, c.name as category_name
+    FROM order_items oi 
+    JOIN products p ON oi.product_id = p.id 
+    JOIN categories c ON p.category_id = c.id
+    WHERE oi.order_id = ?
+  `).all(orderId);
+  
+  // Get business settings
+  const business = db.prepare('SELECT * FROM business_settings WHERE id = 1').get() || {};
+  
+  // Generate invoice number
+  const invoiceNumber = generateInvoiceNumber(db);
+  
+  // Calculate tax amounts
+  let tax7 = 0, tax19 = 0, net7 = 0, net19 = 0;
+  const foodCategories = ['getränke', 'snacks', 'obst', 'gemüse', 'milch', 'brot', 'back', 'fleisch', 'wurst', 'tiefkühl', 'kühl'];
+  
+  order.items.forEach(item => {
+    const lineTotal = item.price * item.quantity;
+    const isFood = foodCategories.some(fc => (item.category_name || '').toLowerCase().includes(fc));
+    const taxRate = isFood ? 7 : 19;
+    
+    const netAmount = lineTotal / (1 + taxRate / 100);
+    if (taxRate === 7) {
+      tax7 += lineTotal - netAmount;
+      net7 += netAmount;
+    } else {
+      tax19 += lineTotal - netAmount;
+      net19 += netAmount;
+    }
+  });
+  
+  // Delivery fee (19%)
+  const deliveryNet = order.delivery_fee / 1.19;
+  tax19 += order.delivery_fee - deliveryNet;
+  net19 += deliveryNet;
+  
+  const netTotal = net7 + net19;
+  
+  // Generate PDF
+  order.invoice_number = invoiceNumber;
+  order.invoice_date = new Date().toISOString();
+  
+  try {
+    const pdfBuffer = await generateInvoice(order, business);
+    
+    // Ensure invoices directory exists
+    const invoicesDir = path.join(__dirname, 'invoices');
+    if (!fs.existsSync(invoicesDir)) {
+      fs.mkdirSync(invoicesDir, { recursive: true });
+    }
+    
+    // Save PDF
+    const pdfPath = path.join(invoicesDir, `${invoiceNumber}.pdf`);
+    fs.writeFileSync(pdfPath, pdfBuffer);
+    
+    // Save invoice record
+    const invoiceStmt = db.prepare(`
+      INSERT INTO invoices (order_id, invoice_number, net_total, tax_7_amount, tax_19_amount, gross_total, pdf_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const invoiceResult = invoiceStmt.run(orderId, invoiceNumber, netTotal, tax7, tax19, order.total, pdfPath);
+    
+    const invoice = {
+      id: invoiceResult.lastInsertRowid,
+      order_id: orderId,
+      invoice_number: invoiceNumber,
+      net_total: netTotal,
+      tax_7_amount: tax7,
+      tax_19_amount: tax19,
+      gross_total: order.total
+    };
+    
+    res.json({ invoice, message: 'Rechnung erstellt' });
+  } catch (e) {
+    console.error('Invoice generation error:', e);
+    res.status(500).json({ error: 'Fehler beim Erstellen der Rechnung: ' + e.message });
+  }
+});
+
+// Download invoice PDF
+app.get('/api/invoices/:invoiceNumber/download', auth(), (req, res) => {
+  const invoice = db.prepare('SELECT * FROM invoices WHERE invoice_number = ?').get(req.params.invoiceNumber);
+  if (!invoice) return res.status(404).json({ error: 'Rechnung nicht gefunden' });
+  
+  // Check permission
+  const order = db.prepare('SELECT user_id FROM orders WHERE id = ?').get(invoice.order_id);
+  if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Keine Berechtigung' });
+  }
+  
+  if (!fs.existsSync(invoice.pdf_path)) {
+    return res.status(404).json({ error: 'PDF nicht gefunden' });
+  }
+  
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${invoice.invoice_number}.pdf"`);
+  res.sendFile(invoice.pdf_path);
+});
+
+// Get invoice for order
+app.get('/api/orders/:id/invoice', auth(), (req, res) => {
+  const invoice = db.prepare('SELECT * FROM invoices WHERE order_id = ?').get(req.params.id);
+  if (!invoice) return res.status(404).json({ error: 'Keine Rechnung vorhanden' });
+  
+  // Check permission
+  const order = db.prepare('SELECT user_id FROM orders WHERE id = ?').get(invoice.order_id);
+  if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Keine Berechtigung' });
+  }
+  
+  res.json(invoice);
+});
+
+// List all invoices (admin)
+app.get('/api/admin/invoices', auth(['admin']), (req, res) => {
+  const { from, to, limit = 100 } = req.query;
+  
+  let sql = `
+    SELECT i.*, o.user_id, u.name as customer_name, u.email as customer_email
+    FROM invoices i
+    JOIN orders o ON i.order_id = o.id
+    JOIN users u ON o.user_id = u.id
+  `;
+  const params = [];
+  
+  if (from || to) {
+    const conditions = [];
+    if (from) { conditions.push('date(i.invoice_date) >= ?'); params.push(from); }
+    if (to) { conditions.push('date(i.invoice_date) <= ?'); params.push(to); }
+    sql += ` WHERE ${conditions.join(' AND ')}`;
+  }
+  
+  sql += ` ORDER BY i.invoice_date DESC LIMIT ?`;
+  params.push(parseInt(limit));
+  
+  const invoices = db.prepare(sql).all(...params);
+  
+  // Calculate totals
+  const totals = db.prepare(`
+    SELECT 
+      COUNT(*) as count,
+      COALESCE(SUM(net_total), 0) as net_total,
+      COALESCE(SUM(tax_7_amount), 0) as tax_7,
+      COALESCE(SUM(tax_19_amount), 0) as tax_19,
+      COALESCE(SUM(gross_total), 0) as gross_total
+    FROM invoices
+    ${from || to ? `WHERE ${from ? 'date(invoice_date) >= ?' : ''} ${from && to ? 'AND' : ''} ${to ? 'date(invoice_date) <= ?' : ''}` : ''}
+  `).get(...(from && to ? [from, to] : from ? [from] : to ? [to] : []));
+  
+  res.json({ invoices, totals });
+});
+
+// Invoice stats for dashboard
+app.get('/api/admin/invoice-stats', auth(['admin']), (req, res) => {
+  const today = new Date().toISOString().split('T')[0];
+  const thisMonth = today.substring(0, 7);
+  
+  const stats = {
+    today: db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(gross_total), 0) as total FROM invoices WHERE date(invoice_date) = ?").get(today),
+    month: db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(gross_total), 0) as total FROM invoices WHERE strftime('%Y-%m', invoice_date) = ?").get(thisMonth),
+    pending: db.prepare("SELECT COUNT(*) as count FROM orders WHERE status = 'delivered' AND id NOT IN (SELECT order_id FROM invoices)").get()
+  };
+  
+  res.json(stats);
+});
+
+// Auto-generate invoice on delivery (can be called from status update)
+async function autoGenerateInvoice(orderId) {
+  try {
+    const existingInvoice = db.prepare('SELECT id FROM invoices WHERE order_id = ?').get(orderId);
+    if (existingInvoice) return; // Already exists
+    
+    const order = db.prepare(`
+      SELECT o.*, u.name as customer_name, u.email as customer_email,
+             a.street, a.house_number, a.postal_code, a.city
+      FROM orders o 
+      JOIN users u ON o.user_id = u.id 
+      JOIN addresses a ON o.address_id = a.id
+      WHERE o.id = ?
+    `).get(orderId);
+    
+    if (!order || order.status !== 'delivered') return;
+    
+    order.items = db.prepare(`
+      SELECT oi.*, p.name, p.unit, c.name as category_name
+      FROM order_items oi 
+      JOIN products p ON oi.product_id = p.id 
+      JOIN categories c ON p.category_id = c.id
+      WHERE oi.order_id = ?
+    `).all(orderId);
+    
+    const business = db.prepare('SELECT * FROM business_settings WHERE id = 1').get() || {};
+    const invoiceNumber = generateInvoiceNumber(db);
+    
+    // Calculate taxes
+    let tax7 = 0, tax19 = 0, net7 = 0, net19 = 0;
+    const foodCategories = ['getränke', 'snacks', 'obst', 'gemüse', 'milch', 'brot', 'back', 'fleisch', 'wurst', 'tiefkühl'];
+    
+    order.items.forEach(item => {
+      const lineTotal = item.price * item.quantity;
+      const isFood = foodCategories.some(fc => (item.category_name || '').toLowerCase().includes(fc));
+      const netAmount = lineTotal / (1 + (isFood ? 7 : 19) / 100);
+      if (isFood) { tax7 += lineTotal - netAmount; net7 += netAmount; }
+      else { tax19 += lineTotal - netAmount; net19 += netAmount; }
+    });
+    
+    const deliveryNet = order.delivery_fee / 1.19;
+    tax19 += order.delivery_fee - deliveryNet;
+    net19 += deliveryNet;
+    
+    order.invoice_number = invoiceNumber;
+    order.invoice_date = new Date().toISOString();
+    
+    const pdfBuffer = await generateInvoice(order, business);
+    
+    const invoicesDir = path.join(__dirname, 'invoices');
+    if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir, { recursive: true });
+    
+    const pdfPath = path.join(invoicesDir, `${invoiceNumber}.pdf`);
+    fs.writeFileSync(pdfPath, pdfBuffer);
+    
+    db.prepare(`
+      INSERT INTO invoices (order_id, invoice_number, net_total, tax_7_amount, tax_19_amount, gross_total, pdf_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(orderId, invoiceNumber, net7 + net19, tax7, tax19, order.total, pdfPath);
+    
+    console.log(`Invoice ${invoiceNumber} generated for order ${orderId}`);
+  } catch (e) {
+    console.error('Auto invoice generation error:', e);
+  }
+}
 
 // ============ SOCKET.IO ============
 
