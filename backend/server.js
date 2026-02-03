@@ -260,6 +260,37 @@ db.exec(`
     ('WELCOME10', 'Willkommensrabatt 10%', 'percent', 10, 15),
     ('SPEETI5', '5€ Rabatt', 'fixed', 5, 20),
     ('FREEDELIVERY', 'Kostenlose Lieferung', 'delivery', 100, 10);
+
+  -- Inventory Management (Warehouse)
+  CREATE TABLE IF NOT EXISTS inventory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    barcode TEXT UNIQUE,
+    name TEXT NOT NULL,
+    brand TEXT,
+    category TEXT DEFAULT 'Sonstiges',
+    price REAL,
+    image TEXT,
+    stock INTEGER DEFAULT 0,
+    min_stock INTEGER DEFAULT 5,
+    source TEXT DEFAULT 'Manual',
+    product_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES products(id)
+  );
+
+  -- Inventory Transactions (for history/audit)
+  CREATE TABLE IF NOT EXISTS inventory_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inventory_id INTEGER NOT NULL,
+    change_amount INTEGER NOT NULL,
+    type TEXT DEFAULT 'adjustment',
+    reason TEXT,
+    user_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (inventory_id) REFERENCES inventory(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
 `);
 
 // Add new columns if they don't exist (for existing databases)
@@ -1527,6 +1558,240 @@ async function sendPushNotification(userId, title, body, data = {}) {
   // For now, we'll use socket.io as fallback
   io.emit(`notification-${userId}`, { title, body, data });
 }
+
+// ============ INVENTORY / WAREHOUSE MANAGEMENT ============
+
+// Get all inventory items
+app.get('/api/inventory', auth(['admin']), (req, res) => {
+  const items = db.prepare(`
+    SELECT i.*, p.name as product_name 
+    FROM inventory i 
+    LEFT JOIN products p ON i.product_id = p.id 
+    ORDER BY i.name ASC
+  `).all();
+  res.json(items);
+});
+
+// Get inventory item by barcode
+app.get('/api/inventory/barcode/:barcode', auth(['admin']), (req, res) => {
+  const item = db.prepare('SELECT * FROM inventory WHERE barcode = ?').get(req.params.barcode);
+  res.json(item || null);
+});
+
+// Add inventory item (from barcode scan)
+app.post('/api/inventory/add', auth(['admin']), (req, res) => {
+  const { barcode, name, brand, category, price, image, quantity, source } = req.body;
+  
+  if (!name) {
+    return res.status(400).json({ error: 'Produktname erforderlich' });
+  }
+
+  try {
+    // Check if barcode already exists
+    if (barcode) {
+      const existing = db.prepare('SELECT * FROM inventory WHERE barcode = ?').get(barcode);
+      if (existing) {
+        // Update stock instead
+        db.prepare('UPDATE inventory SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(quantity || 1, existing.id);
+        
+        // Log transaction
+        db.prepare(`
+          INSERT INTO inventory_transactions (inventory_id, change_amount, type, user_id)
+          VALUES (?, ?, 'addition', ?)
+        `).run(existing.id, quantity || 1, req.user.id);
+        
+        return res.json({ 
+          id: existing.id, 
+          updated: true, 
+          stock: existing.stock + (quantity || 1) 
+        });
+      }
+    }
+    
+    // Insert new item
+    const result = db.prepare(`
+      INSERT INTO inventory (barcode, name, brand, category, price, image, stock, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      barcode || null, 
+      name, 
+      brand || null, 
+      category || 'Sonstiges',
+      price || null,
+      image || null,
+      quantity || 1,
+      source || 'Manual'
+    );
+    
+    // Log transaction
+    db.prepare(`
+      INSERT INTO inventory_transactions (inventory_id, change_amount, type, user_id)
+      VALUES (?, ?, 'initial', ?)
+    `).run(result.lastInsertRowid, quantity || 1, req.user.id);
+    
+    res.json({ id: result.lastInsertRowid, created: true });
+  } catch (e) {
+    console.error('Inventory add error:', e);
+    res.status(500).json({ error: 'Fehler beim Hinzufügen' });
+  }
+});
+
+// Update inventory stock
+app.patch('/api/inventory/:id/stock', auth(['admin']), (req, res) => {
+  const { change, reason } = req.body;
+  const id = req.params.id;
+  
+  if (typeof change !== 'number') {
+    return res.status(400).json({ error: 'Änderungswert erforderlich' });
+  }
+  
+  try {
+    const item = db.prepare('SELECT * FROM inventory WHERE id = ?').get(id);
+    if (!item) {
+      return res.status(404).json({ error: 'Produkt nicht gefunden' });
+    }
+    
+    const newStock = Math.max(0, item.stock + change);
+    
+    db.prepare('UPDATE inventory SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(newStock, id);
+    
+    // Log transaction
+    db.prepare(`
+      INSERT INTO inventory_transactions (inventory_id, change_amount, type, reason, user_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, change, change > 0 ? 'addition' : 'removal', reason || null, req.user.id);
+    
+    res.json({ id, stock: newStock });
+  } catch (e) {
+    console.error('Stock update error:', e);
+    res.status(500).json({ error: 'Fehler beim Aktualisieren' });
+  }
+});
+
+// Update inventory item details
+app.patch('/api/inventory/:id', auth(['admin']), (req, res) => {
+  const { name, brand, category, price, image, min_stock, barcode } = req.body;
+  const id = req.params.id;
+  
+  try {
+    db.prepare(`
+      UPDATE inventory 
+      SET name = COALESCE(?, name),
+          brand = COALESCE(?, brand),
+          category = COALESCE(?, category),
+          price = COALESCE(?, price),
+          image = COALESCE(?, image),
+          min_stock = COALESCE(?, min_stock),
+          barcode = COALESCE(?, barcode),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(name, brand, category, price, image, min_stock, barcode, id);
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Fehler beim Aktualisieren' });
+  }
+});
+
+// Delete inventory item
+app.delete('/api/inventory/:id', auth(['admin']), (req, res) => {
+  try {
+    db.prepare('DELETE FROM inventory_transactions WHERE inventory_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM inventory WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Fehler beim Löschen' });
+  }
+});
+
+// Get inventory transaction history
+app.get('/api/inventory/:id/history', auth(['admin']), (req, res) => {
+  const history = db.prepare(`
+    SELECT t.*, u.name as user_name
+    FROM inventory_transactions t
+    LEFT JOIN users u ON t.user_id = u.id
+    WHERE t.inventory_id = ?
+    ORDER BY t.created_at DESC
+    LIMIT 50
+  `).all(req.params.id);
+  res.json(history);
+});
+
+// Get low stock alerts
+app.get('/api/inventory/alerts/low-stock', auth(['admin']), (req, res) => {
+  const items = db.prepare(`
+    SELECT * FROM inventory 
+    WHERE stock <= min_stock 
+    ORDER BY stock ASC
+  `).all();
+  res.json(items);
+});
+
+// Link inventory item to product
+app.post('/api/inventory/:id/link-product', auth(['admin']), (req, res) => {
+  const { product_id } = req.body;
+  
+  try {
+    db.prepare('UPDATE inventory SET product_id = ? WHERE id = ?')
+      .run(product_id, req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Fehler beim Verknüpfen' });
+  }
+});
+
+// ============ IMAGE UPLOAD ============
+
+const multer = require('multer');
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+const productsDir = path.join(uploadsDir, 'products');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+if (!fs.existsSync(productsDir)) fs.mkdirSync(productsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, productsDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `product-${Date.now()}-${Math.random().toString(36).substr(2, 9)}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif|webp/;
+    const extOk = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mimeOk = allowed.test(file.mimetype);
+    cb(null, extOk && mimeOk);
+  }
+});
+
+// Upload product image
+app.post('/api/upload/product', auth(['admin']), upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Keine Datei hochgeladen' });
+  }
+  
+  const imageUrl = `/uploads/products/${req.file.filename}`;
+  res.json({ url: imageUrl });
+});
+
+// Update product image
+app.patch('/api/products/:id/image', auth(['admin']), (req, res) => {
+  const { image } = req.body;
+  
+  try {
+    db.prepare('UPDATE products SET image = ? WHERE id = ?').run(image, req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Fehler beim Aktualisieren' });
+  }
+});
 
 // ============ SOCKET.IO ============
 

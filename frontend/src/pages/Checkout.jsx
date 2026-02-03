@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap, Wallet, Smartphone, AlertCircle, Tag, Check, X } from 'lucide-react';
+import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap, Wallet, Smartphone, AlertCircle, Tag, Check, X, Map } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useStore, api } from '../store';
+
+// Lazy load map component
+const AddressMap = lazy(() => import('../components/AddressMap'));
+import AddressAutocomplete from '../components/AddressAutocomplete';
 
 // Generate time slots
 const generateTimeSlots = () => {
@@ -90,6 +94,7 @@ export default function Checkout() {
   const [promoCode, setPromoCode] = useState('');
   const [promoLoading, setPromoLoading] = useState(false);
   const [appliedPromo, setAppliedPromo] = useState(null);
+  const [showMapPicker, setShowMapPicker] = useState(false);
   const timeSlots = generateTimeSlots();
 
   const subtotal = getCartTotal();
@@ -161,6 +166,32 @@ export default function Checkout() {
     await addAddress({ ...newAddress, city: 'Münster', is_default: true });
     setShowAddressForm(false);
     setNewAddress({ street: '', house_number: '', postal_code: '', instructions: '' });
+  };
+
+  // Handle address selection from map
+  const handleMapAddressSelect = async (mapAddress) => {
+    setShowMapPicker(false);
+    
+    // Pre-fill the address form with map selection
+    setNewAddress({
+      street: mapAddress.street || '',
+      house_number: mapAddress.house_number || '',
+      postal_code: mapAddress.postal_code || '',
+      instructions: ''
+    });
+    
+    // If we have complete address, save it directly
+    if (mapAddress.street && mapAddress.house_number && mapAddress.postal_code) {
+      await addAddress({
+        ...mapAddress,
+        city: 'Münster',
+        is_default: true,
+        label: `${mapAddress.street} ${mapAddress.house_number}`
+      });
+    } else {
+      // Show form for user to complete
+      setShowAddressForm(true);
+    }
   };
 
   const handleOrder = async () => {
@@ -362,6 +393,21 @@ export default function Checkout() {
             </button>
           ))}
 
+          {/* Map Picker Button */}
+          <button
+            onClick={() => setShowMapPicker(true)}
+            className="w-full flex items-center gap-3 p-4 mb-3 bg-gradient-to-r from-rose-50 to-pink-50 border-2 border-rose-200 rounded-xl hover:border-rose-400 transition-colors"
+          >
+            <div className="w-12 h-12 bg-rose-100 rounded-xl flex items-center justify-center">
+              <Map size={24} className="text-rose-500" />
+            </div>
+            <div className="flex-1 text-left">
+              <p className="font-semibold text-gray-900">📍 Auf Karte auswählen</p>
+              <p className="text-sm text-gray-500">Standort direkt auf der Karte markieren</p>
+            </div>
+            <ChevronRight size={20} className="text-rose-400" />
+          </button>
+
           {showAddressForm ? (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
@@ -369,13 +415,21 @@ export default function Checkout() {
               className="space-y-3 pt-2"
             >
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Straße *</label>
-                <input
-                  type="text"
-                  placeholder="z.B. Hammer Straße"
+                <label className="block text-sm font-medium text-gray-700 mb-1">Straße * <span className="text-gray-400 font-normal">(tippen zum Suchen)</span></label>
+                <AddressAutocomplete
                   value={newAddress.street}
-                  onChange={(e) => setNewAddress({ ...newAddress, street: e.target.value })}
-                  className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  onChange={(val) => setNewAddress({ ...newAddress, street: val })}
+                  onSelect={(addr) => {
+                    setNewAddress({
+                      ...newAddress,
+                      street: addr.street,
+                      house_number: addr.houseNumber || newAddress.house_number,
+                      postal_code: addr.postalCode || newAddress.postal_code,
+                      lat: addr.lat,
+                      lng: addr.lng
+                    });
+                  }}
+                  placeholder="z.B. Hammer Straße..."
                 />
               </div>
               <div className="flex gap-3">
@@ -619,6 +673,23 @@ export default function Checkout() {
           </div>
         </section>
       </div>
+
+      {/* Map Picker Modal */}
+      {showMapPicker && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
+            <div className="bg-white rounded-2xl p-8">
+              <div className="w-10 h-10 border-3 border-rose-500/30 border-t-rose-500 rounded-full animate-spin mx-auto" />
+              <p className="text-gray-600 mt-4">Karte wird geladen...</p>
+            </div>
+          </div>
+        }>
+          <AddressMap
+            onAddressSelect={handleMapAddressSelect}
+            onClose={() => setShowMapPicker(false)}
+          />
+        </Suspense>
+      )}
 
       {/* Order Button */}
       <div className="fixed bottom-16 lg:bottom-0 left-0 right-0 bg-white border-t border-gray-200 safe-bottom z-30">

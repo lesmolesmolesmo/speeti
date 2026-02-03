@@ -1,20 +1,30 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useStore } from './store';
 
-// Pages
+// Pages - Critical (eager load)
 import Home from './pages/Home';
 import Category from './pages/Category';
 import Search from './pages/Search';
 import Cart from './pages/Cart';
-import Checkout from './pages/Checkout';
-import Orders from './pages/Orders';
-import OrderDetail from './pages/OrderDetail';
-import Profile from './pages/Profile';
 import Login from './pages/Login';
-import Admin from './pages/Admin';
-import Driver from './pages/Driver';
-import Support from './pages/Support';
+
+// Pages - Lazy loaded for better performance
+const Checkout = lazy(() => import('./pages/Checkout'));
+const Orders = lazy(() => import('./pages/Orders'));
+const OrderDetail = lazy(() => import('./pages/OrderDetail'));
+const Profile = lazy(() => import('./pages/Profile'));
+const Admin = lazy(() => import('./pages/Admin'));
+const Driver = lazy(() => import('./pages/Driver'));
+const Support = lazy(() => import('./pages/Support'));
+const Warehouse = lazy(() => import('./pages/Warehouse'));
+
+// Loading fallback
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-screen">
+    <div className="w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin" />
+  </div>
+);
 
 // Components
 import Navbar from './components/Navbar';
@@ -28,7 +38,7 @@ function App() {
   
   // Hide nav on admin/driver/support pages (they have their own layout)
   const hideNav = ['/admin', '/driver', '/support'].some(p => location.pathname.startsWith(p));
-  const isFullscreenPage = ['/admin', '/driver', '/login', '/support'].some(p => location.pathname.startsWith(p));
+  const isFullscreenPage = ['/admin', '/driver', '/login', '/support', '/warehouse'].some(p => location.pathname.startsWith(p));
 
   useEffect(() => {
     fetchCategories();
@@ -60,6 +70,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/admin/*" element={user?.role === 'admin' ? <Admin /> : <Navigate to="/login?redirect=/admin" />} />
           <Route path="/driver/*" element={user?.role === 'driver' ? <Driver /> : <Navigate to="/login?redirect=/driver" />} />
+          <Route path="/warehouse" element={user?.role === 'admin' ? <Suspense fallback={<PageLoader />}><Warehouse /></Suspense> : <Navigate to="/login?redirect=/warehouse" />} />
           <Route path="/support" element={<Support />} />
         </Routes>
       </main>

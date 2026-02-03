@@ -7,7 +7,7 @@ import {
   Calendar, BarChart3, ArrowUpRight, ArrowDownRight, Filter, Download,
   Printer, RefreshCw, Bell, ChevronDown, ChevronRight, Copy, ExternalLink,
   Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer, Headphones,
-  MessageCircle, Bot, User, Send
+  MessageCircle, Bot, User, Send, Warehouse, ScanLine, Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useStore, api } from '../store';
@@ -17,6 +17,7 @@ const tabs = [
   { id: 'orders', label: 'Bestellungen', icon: ShoppingBag, badge: true },
   { id: 'products', label: 'Produkte', icon: Package },
   { id: 'categories', label: 'Kategorien', icon: Grid3X3 },
+  { id: 'warehouse', label: 'Lager', icon: Warehouse, external: '/warehouse' },
   { id: 'drivers', label: 'Fahrer', icon: Truck },
   { id: 'customers', label: 'Kunden', icon: Users },
   { id: 'support', label: 'Support', icon: Headphones, supportBadge: true },
@@ -536,17 +537,48 @@ export default function Admin() {
                     />
                   </div>
                   <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Bild-URL</label>
-                    <div className="flex gap-2">
-                      <input type="url" value={form.image || ''} onChange={(e) => setForm({...form, image: e.target.value})}
-                        className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        placeholder="https://..."
-                      />
-                      {form.image && (
-                        <div className="w-12 h-12 border border-gray-200 rounded-xl overflow-hidden">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Produktbild</label>
+                    <div className="flex gap-4 items-start">
+                      {/* Preview */}
+                      <div className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-xl overflow-hidden flex items-center justify-center bg-gray-50">
+                        {form.image ? (
                           <img src={form.image} alt="" className="w-full h-full object-cover" />
-                        </div>
-                      )}
+                        ) : (
+                          <Image size={32} className="text-gray-300" />
+                        )}
+                      </div>
+                      {/* Upload Options */}
+                      <div className="flex-1 space-y-2">
+                        {/* File Upload */}
+                        <label className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                          <Upload size={18} className="text-gray-500" />
+                          <span className="text-sm text-gray-600">Bild hochladen</span>
+                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                            const file = e.target.files[0];
+                            if (!file) return;
+                            const formData = new FormData();
+                            formData.append('image', file);
+                            try {
+                              const res = await api.post('/upload/product', formData, {
+                                headers: { 'Content-Type': 'multipart/form-data' }
+                              });
+                              setForm({...form, image: res.data.url});
+                            } catch (err) {
+                              alert('Upload fehlgeschlagen');
+                            }
+                          }} />
+                        </label>
+                        {/* URL Input */}
+                        <input type="url" value={form.image || ''} onChange={(e) => setForm({...form, image: e.target.value})}
+                          className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
+                          placeholder="oder URL eingeben: https://..."
+                        />
+                        {form.image && (
+                          <button type="button" onClick={() => setForm({...form, image: ''})} className="text-xs text-red-500 hover:underline">
+                            Bild entfernen
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -854,25 +886,147 @@ export default function Admin() {
   };
 
   // ============ SETTINGS ============
-  const SettingsTab = () => (
-    <div className="max-w-2xl space-y-6">
-      <h2 className="text-xl font-bold">Einstellungen</h2>
-      <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
-        <h3 className="font-semibold border-b pb-2">Shop-Einstellungen</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div><label className="block text-sm font-medium mb-1">Shop-Name</label><input type="text" defaultValue="Speeti" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Slogan</label><input type="text" defaultValue="Blitzschnell bei dir" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Liefergebühr (€)</label><input type="number" defaultValue="2.99" step="0.01" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Gratis ab (€)</label><input type="number" defaultValue="20" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Mindestbestellwert (€)</label><input type="number" defaultValue="10" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Lieferzeit (Min)</label><input type="text" defaultValue="15-20" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Öffnungszeiten</label><input type="text" defaultValue="08:00-22:00" className="w-full px-4 py-2 border rounded-xl" /></div>
-          <div><label className="block text-sm font-medium mb-1">Liefergebiet</label><input type="text" defaultValue="Münster" className="w-full px-4 py-2 border rounded-xl" /></div>
+  const SettingsTab = () => {
+    const [settings, setSettings] = useState({
+      // Shop
+      shopName: 'Speeti',
+      slogan: 'Blitzschnell bei dir',
+      deliveryFee: '2.99',
+      freeDeliveryMin: '20',
+      minOrder: '10',
+      deliveryTime: '15-20',
+      hours: '08:00-22:00',
+      area: 'Münster',
+      // Business (für Rechnungen)
+      companyName: '',
+      companyStreet: '',
+      companyCity: '',
+      companyPostalCode: '',
+      companyPhone: '',
+      companyEmail: '',
+      companyWebsite: '',
+      // Tax
+      taxNumber: '',
+      vatId: '',
+      taxRateFood: '7',
+      taxRateOther: '19',
+      // Bank
+      bankName: '',
+      iban: '',
+      bic: '',
+    });
+    const [saving, setSaving] = useState(false);
+    const [saved, setSaved] = useState(false);
+
+    useEffect(() => {
+      // Load settings from backend
+      api.get('/admin/settings').then(({ data }) => {
+        if (data) setSettings(s => ({ ...s, ...data }));
+      }).catch(() => {});
+    }, []);
+
+    const saveSettings = async () => {
+      setSaving(true);
+      try {
+        await api.post('/admin/settings', settings);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } catch (e) {
+        alert('Fehler beim Speichern');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    const updateSetting = (key, value) => {
+      setSettings(s => ({ ...s, [key]: value }));
+    };
+
+    return (
+      <div className="max-w-3xl space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">Einstellungen</h2>
+          {saved && (
+            <span className="text-green-600 font-medium flex items-center gap-2">
+              <CheckCircle size={18} /> Gespeichert!
+            </span>
+          )}
         </div>
-        <button className="w-full bg-primary-500 text-white py-3 rounded-xl hover:bg-primary-600 font-semibold">Speichern</button>
+
+        {/* Shop Settings */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Package size={18} className="text-rose-500" /> Shop-Einstellungen
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Shop-Name</label><input type="text" value={settings.shopName} onChange={e => updateSetting('shopName', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Slogan</label><input type="text" value={settings.slogan} onChange={e => updateSetting('slogan', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Liefergebühr (€)</label><input type="number" value={settings.deliveryFee} step="0.01" onChange={e => updateSetting('deliveryFee', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Gratis ab (€)</label><input type="number" value={settings.freeDeliveryMin} onChange={e => updateSetting('freeDeliveryMin', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Mindestbestellwert (€)</label><input type="number" value={settings.minOrder} onChange={e => updateSetting('minOrder', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Lieferzeit (Min)</label><input type="text" value={settings.deliveryTime} onChange={e => updateSetting('deliveryTime', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Öffnungszeiten</label><input type="text" value={settings.hours} onChange={e => updateSetting('hours', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Liefergebiet</label><input type="text" value={settings.area} onChange={e => updateSetting('area', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Business/Company Settings for Invoices */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Scale size={18} className="text-rose-500" /> Firmendaten (für Rechnungen)
+          </h3>
+          <p className="text-sm text-gray-500 -mt-2">Diese Daten erscheinen auf allen Rechnungen und Quittungen.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Firmenname *</label><input type="text" value={settings.companyName} onChange={e => updateSetting('companyName', e.target.value)} placeholder="z.B. Speeti GmbH" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Straße + Hausnummer *</label><input type="text" value={settings.companyStreet} onChange={e => updateSetting('companyStreet', e.target.value)} placeholder="z.B. Musterstraße 123" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">PLZ *</label><input type="text" value={settings.companyPostalCode} onChange={e => updateSetting('companyPostalCode', e.target.value)} placeholder="48149" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Stadt *</label><input type="text" value={settings.companyCity} onChange={e => updateSetting('companyCity', e.target.value)} placeholder="Münster" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Telefon</label><input type="text" value={settings.companyPhone} onChange={e => updateSetting('companyPhone', e.target.value)} placeholder="+49 251 123456" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">E-Mail</label><input type="email" value={settings.companyEmail} onChange={e => updateSetting('companyEmail', e.target.value)} placeholder="info@speeti.de" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Website</label><input type="text" value={settings.companyWebsite} onChange={e => updateSetting('companyWebsite', e.target.value)} placeholder="www.speeti.de" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Tax Settings */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Percent size={18} className="text-rose-500" /> Steuerdaten
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Steuernummer *</label><input type="text" value={settings.taxNumber} onChange={e => updateSetting('taxNumber', e.target.value)} placeholder="z.B. 123/456/78901" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">USt-IdNr.</label><input type="text" value={settings.vatId} onChange={e => updateSetting('vatId', e.target.value)} placeholder="z.B. DE123456789" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">MwSt. Lebensmittel (%)</label><input type="number" value={settings.taxRateFood} onChange={e => updateSetting('taxRateFood', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">MwSt. Sonstiges (%)</label><input type="number" value={settings.taxRateOther} onChange={e => updateSetting('taxRateOther', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Bank Details */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <DollarSign size={18} className="text-rose-500" /> Bankverbindung (für Rechnungen)
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Bank</label><input type="text" value={settings.bankName} onChange={e => updateSetting('bankName', e.target.value)} placeholder="z.B. Sparkasse Münsterland" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">IBAN</label><input type="text" value={settings.iban} onChange={e => updateSetting('iban', e.target.value)} placeholder="DE89 3704 0044 0532 0130 00" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">BIC</label><input type="text" value={settings.bic} onChange={e => updateSetting('bic', e.target.value)} placeholder="COBADEFFXXX" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Save Button */}
+        <button 
+          onClick={saveSettings}
+          disabled={saving}
+          className="w-full bg-rose-500 text-white py-4 rounded-xl hover:bg-rose-600 font-semibold disabled:bg-gray-300 flex items-center justify-center gap-2"
+        >
+          {saving ? (
+            <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Speichert...</>
+          ) : (
+            <><Save size={20} /> Einstellungen speichern</>
+          )}
+        </button>
       </div>
-    </div>
-  );
+    );
+  };
 
   // ============ SUPPORT ============
   const SupportTab = () => {
@@ -1129,7 +1283,7 @@ export default function Admin() {
         </div>
         <nav className="p-2 space-y-1">
           {tabs.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            <button key={tab.id} onClick={() => tab.external ? navigate(tab.external) : setActiveTab(tab.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${activeTab === tab.id ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}
             >
               <tab.icon size={20} />
@@ -1140,6 +1294,7 @@ export default function Admin() {
               {tab.supportBadge && escalatedCount > 0 && !sidebarCollapsed && (
                 <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full animate-pulse">{escalatedCount}</span>
               )}
+              {tab.external && !sidebarCollapsed && <ExternalLink size={14} className="text-gray-400" />}
             </button>
           ))}
         </nav>

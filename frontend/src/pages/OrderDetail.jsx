@@ -246,70 +246,48 @@ export default function OrderDetail() {
           </div>
         </section>
 
-        {/* Invoice Section */}
+        {/* Invoice/Receipt Section */}
         {currentOrder.status === 'delivered' && (
           <section className="bg-white rounded-2xl p-4">
             <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-              <FileText size={18} className="text-rose-500" /> Rechnung
+              <FileText size={18} className="text-rose-500" /> Rechnung / Quittung
             </h2>
             
-            {currentOrder.invoice ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500">Rechnungsnummer</span>
-                  <span className="font-medium">{currentOrder.invoice.invoice_number}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500">Rechnungsdatum</span>
-                  <span className="font-medium">
-                    {new Date(currentOrder.invoice.invoice_date).toLocaleDateString('de-DE')}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500">Nettobetrag</span>
-                  <span className="font-medium">{currentOrder.invoice.net_total?.toFixed(2)} €</span>
-                </div>
-                {currentOrder.invoice.tax_7_amount > 0 && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-500">MwSt 7%</span>
-                    <span>{currentOrder.invoice.tax_7_amount?.toFixed(2)} €</span>
-                  </div>
-                )}
-                {currentOrder.invoice.tax_19_amount > 0 && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-500">MwSt 19%</span>
-                    <span>{currentOrder.invoice.tax_19_amount?.toFixed(2)} €</span>
-                  </div>
-                )}
-                
-                <a
-                  href={`/api/invoices/${currentOrder.invoice.invoice_number}/download`}
-                  target="_blank"
-                  className="flex items-center justify-center gap-2 w-full py-3 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 transition-colors mt-4"
-                >
-                  <Download size={18} />
-                  Rechnung herunterladen (PDF)
-                </a>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">Rechnungsnummer</span>
+                <span className="font-medium">RE-{String(currentOrder.id).padStart(5, '0')}</span>
               </div>
-            ) : (
-              <div className="text-center py-4">
-                <FileText size={32} className="mx-auto text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">Rechnung wird erstellt...</p>
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.post(`/orders/${currentOrder.id}/invoice`);
-                      fetchOrder(currentOrder.id);
-                    } catch (e) {
-                      console.error(e);
-                    }
-                  }}
-                  className="mt-3 text-rose-500 text-sm font-medium"
-                >
-                  Rechnung jetzt erstellen
-                </button>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">Bestelldatum</span>
+                <span className="font-medium">
+                  {new Date(currentOrder.created_at).toLocaleDateString('de-DE')}
+                </span>
               </div>
-            )}
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">Gesamtbetrag</span>
+                <span className="font-bold text-rose-500">{currentOrder.total?.toFixed(2)} €</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">Zahlungsstatus</span>
+                <span className={`font-medium ${currentOrder.payment_status === 'paid' ? 'text-green-600' : 'text-amber-600'}`}>
+                  {currentOrder.payment_status === 'paid' ? '✓ Bezahlt' : 'Ausstehend'}
+                </span>
+              </div>
+              
+              <a
+                href={`/api/orders/${currentOrder.id}/invoice`}
+                target="_blank"
+                className="flex items-center justify-center gap-2 w-full py-3 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 transition-colors mt-4"
+              >
+                <Download size={18} />
+                Rechnung herunterladen (PDF)
+              </a>
+              
+              <p className="text-xs text-center text-gray-400 mt-2">
+                Die Rechnung enthält alle steuerlichen Angaben gemäß § 14 UStG.
+              </p>
+            </div>
           </section>
         )}
 

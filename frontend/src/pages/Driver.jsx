@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, memo, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { 
   Package, Truck, CheckCircle, MapPin, Phone, MessageCircle, 
@@ -8,6 +8,9 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { useStore, api } from '../store';
+
+// Lazy load map for performance
+const MiniMap = lazy(() => import('../components/MiniMap'));
 
 const statusConfig = {
   confirmed: { label: 'Neu', color: 'bg-amber-500', icon: '🆕' },
@@ -513,29 +516,50 @@ export default function Driver() {
                 </div>
               </div>
 
-              {/* Address */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <MapPin size={18} className="text-rose-500" />
-                      <span className="font-bold">Lieferadresse</span>
-                    </div>
-                    <p className="font-medium text-gray-900">{selectedOrder.street} {selectedOrder.house_number}</p>
-                    <p className="text-gray-500">{selectedOrder.postal_code} {selectedOrder.city}</p>
-                    {selectedOrder.instructions && (
-                      <div className="mt-2 p-2 bg-amber-50 rounded-lg">
-                        <p className="text-sm text-amber-700">📝 {selectedOrder.instructions}</p>
-                      </div>
-                    )}
+              {/* Address with Map */}
+              <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
+                {/* Mini Map */}
+                <Suspense fallback={
+                  <div className="h-[150px] bg-gray-100 flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-rose-500/30 border-t-rose-500 rounded-full animate-spin" />
                   </div>
-                  <a
-                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${selectedOrder.street} ${selectedOrder.house_number}, ${selectedOrder.postal_code} ${selectedOrder.city}`)}`}
-                    target="_blank"
-                    className="w-12 h-12 bg-blue-500 text-white rounded-xl flex items-center justify-center"
-                  >
-                    <Navigation size={22} />
-                  </a>
+                }>
+                  <MiniMap 
+                    address={{
+                      street: selectedOrder.street,
+                      house_number: selectedOrder.house_number,
+                      postal_code: selectedOrder.postal_code,
+                      city: selectedOrder.city || 'Münster',
+                      lat: selectedOrder.lat,
+                      lng: selectedOrder.lng
+                    }}
+                    height={150}
+                  />
+                </Suspense>
+
+                <div className="p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <MapPin size={18} className="text-rose-500" />
+                        <span className="font-bold">Lieferadresse</span>
+                      </div>
+                      <p className="font-medium text-gray-900">{selectedOrder.street} {selectedOrder.house_number}</p>
+                      <p className="text-gray-500">{selectedOrder.postal_code} {selectedOrder.city || 'Münster'}</p>
+                      {selectedOrder.instructions && (
+                        <div className="mt-2 p-2 bg-amber-50 rounded-lg">
+                          <p className="text-sm text-amber-700">📝 {selectedOrder.instructions}</p>
+                        </div>
+                      )}
+                    </div>
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${selectedOrder.street} ${selectedOrder.house_number}, ${selectedOrder.postal_code} ${selectedOrder.city || 'Münster'}`)}`}
+                      target="_blank"
+                      className="w-12 h-12 bg-blue-500 text-white rounded-xl flex items-center justify-center flex-shrink-0"
+                    >
+                      <Navigation size={22} />
+                    </a>
+                  </div>
                 </div>
               </div>
 
