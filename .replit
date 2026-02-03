@@ -1,5 +1,6 @@
 run = "npm run start"
 entrypoint = "backend/server.js"
+hidden = [".config", "package-lock.json"]
 
 [nix]
 channel = "stable-24_05"
@@ -8,8 +9,8 @@ channel = "stable-24_05"
 PORT = "3000"
 
 [deployment]
-run = ["sh", "-c", "cd backend && npm start"]
-build = ["sh", "-c", "npm install && cd backend && npm install && cd ../frontend && npm install && npm run build"]
+run = ["sh", "-c", "npm run start"]
+deploymentTarget = "cloudrun"
 
 [[ports]]
 localPort = 3000

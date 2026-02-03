@@ -38,12 +38,14 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Desktop Sidebar - hidden on mobile and fullscreen pages */}
-      {!isFullscreenPage && <DesktopSidebar />}
+    <div className="min-h-screen bg-gray-50 lg:flex">
+      {/* Desktop Sidebar - ONLY on large screens, hidden on mobile */}
+      <div className="hidden lg:block">
+        {!isFullscreenPage && <DesktopSidebar />}
+      </div>
 
       {/* Main Content */}
-      <main className={`flex-1 ${!hideNav ? 'pb-20 lg:pb-0' : ''}`}>
+      <main className={`flex-1 min-w-0 ${!hideNav ? 'pb-20 lg:pb-0' : ''}`}>
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/category/:slug" element={<Category />} />
