@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap, Wallet, Smartphone, AlertCircle } from 'lucide-react';
+import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap, Wallet, Smartphone, AlertCircle, Tag, Check, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useStore, api } from '../store';
 
@@ -87,11 +87,28 @@ export default function Checkout() {
   const [deliveryType, setDeliveryType] = useState('asap');
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [showTimeSlots, setShowTimeSlots] = useState(false);
+  const [promoCode, setPromoCode] = useState('');
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [appliedPromo, setAppliedPromo] = useState(null);
   const timeSlots = generateTimeSlots();
 
   const subtotal = getCartTotal();
-  const deliveryFee = subtotal >= 20 ? 0 : 2.99;
-  const total = subtotal + deliveryFee;
+  const baseDeliveryFee = subtotal >= 20 ? 0 : 2.99;
+  
+  // Calculate discount
+  let discount = 0;
+  if (appliedPromo) {
+    if (appliedPromo.discount_type === 'percent') {
+      discount = subtotal * (appliedPromo.discount_value / 100);
+    } else if (appliedPromo.discount_type === 'fixed') {
+      discount = Math.min(appliedPromo.discount_value, subtotal);
+    } else if (appliedPromo.discount_type === 'delivery') {
+      discount = baseDeliveryFee;
+    }
+  }
+  
+  const deliveryFee = appliedPromo?.discount_type === 'delivery' ? 0 : baseDeliveryFee;
+  const total = Math.max(0, subtotal - discount + deliveryFee);
 
   useEffect(() => {
     fetchAddresses();
@@ -101,6 +118,33 @@ export default function Checkout() {
       setError('Zahlung abgebrochen. Bitte versuche es erneut.');
     }
   }, []);
+
+  const validatePromoCode = async () => {
+    if (!promoCode.trim()) return;
+    
+    setPromoLoading(true);
+    setError(null);
+    
+    try {
+      const { data } = await api.post('/promo/validate', { 
+        code: promoCode.trim(), 
+        subtotal 
+      });
+      
+      if (data.valid) {
+        setAppliedPromo(data.promo);
+        setPromoCode('');
+      }
+    } catch (e) {
+      setError(e.response?.data?.error || 'Ungültiger Promo-Code');
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const removePromo = () => {
+    setAppliedPromo(null);
+  };
 
   const handleAddAddress = async () => {
     if (!newAddress.street || !newAddress.house_number || !newAddress.postal_code) {
@@ -462,6 +506,63 @@ export default function Checkout() {
           )}
         </section>
 
+        {/* Promo Code */}
+        <section className="bg-white rounded-2xl p-4">
+          <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <Tag size={18} className="text-rose-500" /> Promo-Code
+          </h2>
+          
+          {appliedPromo ? (
+            <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-xl">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+                  <Check size={20} className="text-green-600" />
+                </div>
+                <div>
+                  <p className="font-bold text-green-800">{appliedPromo.code}</p>
+                  <p className="text-xs text-green-600">{appliedPromo.description}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="font-bold text-green-600">-{appliedPromo.discount_amount?.toFixed(2)} €</p>
+                <button 
+                  onClick={removePromo}
+                  className="text-xs text-red-500 hover:underline"
+                >
+                  Entfernen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                placeholder="Code eingeben"
+                className="flex-1 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500 uppercase"
+              />
+              <button
+                onClick={validatePromoCode}
+                disabled={!promoCode.trim() || promoLoading}
+                className="px-4 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                {promoLoading ? (
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  'Einlösen'
+                )}
+              </button>
+            </div>
+          )}
+          
+          {!appliedPromo && (
+            <p className="text-xs text-gray-500 mt-2">
+              💡 Probiere: <span className="font-mono bg-gray-100 px-1 rounded">WELCOME10</span> für 10% Rabatt
+            </p>
+          )}
+        </section>
+
         {/* Notes */}
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-3">Anmerkungen</h2>
@@ -490,11 +591,27 @@ export default function Checkout() {
               <span className="text-gray-500">Zwischensumme</span>
               <span>{subtotal.toFixed(2)} €</span>
             </div>
+            {discount > 0 && (
+              <div className="flex justify-between text-sm text-green-600">
+                <span className="flex items-center gap-1">
+                  <Tag size={14} /> Rabatt ({appliedPromo?.code})
+                </span>
+                <span>-{discount.toFixed(2)} €</span>
+              </div>
+            )}
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">Lieferung</span>
-              <span>{deliveryFee > 0 ? `${deliveryFee.toFixed(2)} €` : <span className="text-green-600">Kostenlos</span>}</span>
+              <span>
+                {appliedPromo?.discount_type === 'delivery' ? (
+                  <span className="text-green-600">Kostenlos 🎉</span>
+                ) : deliveryFee > 0 ? (
+                  `${deliveryFee.toFixed(2)} €`
+                ) : (
+                  <span className="text-green-600">Kostenlos</span>
+                )}
+              </span>
             </div>
-            {deliveryFee > 0 && subtotal < 20 && (
+            {deliveryFee > 0 && subtotal < 20 && !appliedPromo && (
               <p className="text-xs text-gray-400 mt-1">
                 Noch {(20 - subtotal).toFixed(2)} € für kostenlose Lieferung
               </p>

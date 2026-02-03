@@ -197,6 +197,69 @@ db.exec(`
 
   -- Initialize business settings if empty
   INSERT OR IGNORE INTO business_settings (id) VALUES (1);
+
+  -- Promo Codes
+  CREATE TABLE IF NOT EXISTS promo_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    description TEXT,
+    discount_type TEXT DEFAULT 'percent',
+    discount_value REAL NOT NULL,
+    min_order_value REAL DEFAULT 0,
+    max_uses INTEGER,
+    used_count INTEGER DEFAULT 0,
+    valid_from DATETIME,
+    valid_until DATETIME,
+    active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Promo Code Usage (track per user)
+  CREATE TABLE IF NOT EXISTS promo_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    promo_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    order_id INTEGER NOT NULL,
+    discount_amount REAL NOT NULL,
+    used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (promo_id) REFERENCES promo_codes(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    UNIQUE(promo_id, user_id)
+  );
+
+  -- Ratings (Customer rates Driver)
+  CREATE TABLE IF NOT EXISTS ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER UNIQUE NOT NULL,
+    user_id INTEGER NOT NULL,
+    driver_id INTEGER NOT NULL,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (driver_id) REFERENCES users(id)
+  );
+
+  -- Push Subscriptions
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id, endpoint)
+  );
+
+  -- Add sample promo codes
+  INSERT OR IGNORE INTO promo_codes (code, description, discount_type, discount_value, min_order_value) 
+  VALUES 
+    ('WELCOME10', 'Willkommensrabatt 10%', 'percent', 10, 15),
+    ('SPEETI5', '5€ Rabatt', 'fixed', 5, 20),
+    ('FREEDELIVERY', 'Kostenlose Lieferung', 'delivery', 100, 10);
 `);
 
 // Add new columns if they don't exist (for existing databases)
@@ -1239,6 +1302,230 @@ async function autoGenerateInvoice(orderId) {
   } catch (e) {
     console.error('Auto invoice generation error:', e);
   }
+}
+
+// ============ PROMO CODES ============
+
+// Validate promo code
+app.post('/api/promo/validate', auth(), (req, res) => {
+  const { code, subtotal } = req.body;
+  
+  const promo = db.prepare(`
+    SELECT * FROM promo_codes 
+    WHERE code = ? AND active = 1
+    AND (valid_from IS NULL OR valid_from <= datetime('now'))
+    AND (valid_until IS NULL OR valid_until >= datetime('now'))
+    AND (max_uses IS NULL OR used_count < max_uses)
+  `).get(code.toUpperCase());
+  
+  if (!promo) {
+    return res.status(400).json({ error: 'Ungültiger oder abgelaufener Promo-Code' });
+  }
+  
+  // Check if user already used this code
+  const alreadyUsed = db.prepare('SELECT id FROM promo_usage WHERE promo_id = ? AND user_id = ?')
+    .get(promo.id, req.user.id);
+  
+  if (alreadyUsed) {
+    return res.status(400).json({ error: 'Du hast diesen Code bereits verwendet' });
+  }
+  
+  // Check minimum order value
+  if (subtotal < promo.min_order_value) {
+    return res.status(400).json({ 
+      error: `Mindestbestellwert: ${promo.min_order_value.toFixed(2)} € (aktuell: ${subtotal.toFixed(2)} €)` 
+    });
+  }
+  
+  // Calculate discount
+  let discount = 0;
+  if (promo.discount_type === 'percent') {
+    discount = subtotal * (promo.discount_value / 100);
+  } else if (promo.discount_type === 'fixed') {
+    discount = Math.min(promo.discount_value, subtotal);
+  } else if (promo.discount_type === 'delivery') {
+    discount = 2.99; // Free delivery
+  }
+  
+  res.json({
+    valid: true,
+    promo: {
+      id: promo.id,
+      code: promo.code,
+      description: promo.description,
+      discount_type: promo.discount_type,
+      discount_value: promo.discount_value,
+      discount_amount: discount
+    }
+  });
+});
+
+// Apply promo code to order (internal use)
+function applyPromoCode(promoId, userId, orderId, discountAmount) {
+  db.prepare('INSERT INTO promo_usage (promo_id, user_id, order_id, discount_amount) VALUES (?, ?, ?, ?)')
+    .run(promoId, userId, orderId, discountAmount);
+  db.prepare('UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?')
+    .run(promoId);
+}
+
+// Admin: List all promo codes
+app.get('/api/admin/promo', auth(['admin']), (req, res) => {
+  const promos = db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC').all();
+  res.json(promos);
+});
+
+// Admin: Create promo code
+app.post('/api/admin/promo', auth(['admin']), (req, res) => {
+  const { code, description, discount_type, discount_value, min_order_value, max_uses, valid_from, valid_until } = req.body;
+  
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO promo_codes (code, description, discount_type, discount_value, min_order_value, max_uses, valid_from, valid_until)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      code.toUpperCase(), 
+      description, 
+      discount_type || 'percent', 
+      discount_value, 
+      min_order_value || 0, 
+      max_uses || null,
+      valid_from || null,
+      valid_until || null
+    );
+    res.json({ id: result.lastInsertRowid, code: code.toUpperCase() });
+  } catch (e) {
+    res.status(400).json({ error: 'Code existiert bereits' });
+  }
+});
+
+// Admin: Update promo code
+app.put('/api/admin/promo/:id', auth(['admin']), (req, res) => {
+  const { description, discount_type, discount_value, min_order_value, max_uses, valid_from, valid_until, active } = req.body;
+  
+  db.prepare(`
+    UPDATE promo_codes SET description=?, discount_type=?, discount_value=?, min_order_value=?, max_uses=?, valid_from=?, valid_until=?, active=?
+    WHERE id = ?
+  `).run(description, discount_type, discount_value, min_order_value, max_uses, valid_from, valid_until, active ? 1 : 0, req.params.id);
+  
+  res.json({ success: true });
+});
+
+// Admin: Delete promo code
+app.delete('/api/admin/promo/:id', auth(['admin']), (req, res) => {
+  db.prepare('DELETE FROM promo_codes WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// ============ RATINGS ============
+
+// Submit rating for an order
+app.post('/api/orders/:id/rating', auth(), (req, res) => {
+  const { rating, comment } = req.body;
+  const orderId = parseInt(req.params.id);
+  
+  // Validate rating
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: 'Bewertung muss zwischen 1 und 5 sein' });
+  }
+  
+  // Get order
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(orderId, req.user.id);
+  if (!order) {
+    return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+  }
+  
+  if (order.status !== 'delivered') {
+    return res.status(400).json({ error: 'Nur gelieferte Bestellungen können bewertet werden' });
+  }
+  
+  if (!order.driver_id) {
+    return res.status(400).json({ error: 'Kein Fahrer zugewiesen' });
+  }
+  
+  // Check if already rated
+  const existingRating = db.prepare('SELECT id FROM ratings WHERE order_id = ?').get(orderId);
+  if (existingRating) {
+    return res.status(400).json({ error: 'Diese Bestellung wurde bereits bewertet' });
+  }
+  
+  // Insert rating
+  const stmt = db.prepare('INSERT INTO ratings (order_id, user_id, driver_id, rating, comment) VALUES (?, ?, ?, ?, ?)');
+  const result = stmt.run(orderId, req.user.id, order.driver_id, rating, comment || null);
+  
+  res.json({ 
+    id: result.lastInsertRowid, 
+    rating, 
+    message: 'Danke für deine Bewertung!' 
+  });
+});
+
+// Get rating for an order
+app.get('/api/orders/:id/rating', auth(), (req, res) => {
+  const rating = db.prepare('SELECT * FROM ratings WHERE order_id = ?').get(req.params.id);
+  res.json(rating || null);
+});
+
+// Get driver's average rating
+app.get('/api/drivers/:id/rating', (req, res) => {
+  const stats = db.prepare(`
+    SELECT 
+      AVG(rating) as average,
+      COUNT(*) as count,
+      SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as five_star,
+      SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as four_star,
+      SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as three_star,
+      SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as two_star,
+      SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one_star
+    FROM ratings WHERE driver_id = ?
+  `).get(req.params.id);
+  
+  res.json({
+    average: stats.average ? Math.round(stats.average * 10) / 10 : 0,
+    count: stats.count || 0,
+    distribution: {
+      5: stats.five_star || 0,
+      4: stats.four_star || 0,
+      3: stats.three_star || 0,
+      2: stats.two_star || 0,
+      1: stats.one_star || 0
+    }
+  });
+});
+
+// ============ PUSH NOTIFICATIONS ============
+
+// Save push subscription
+app.post('/api/push/subscribe', auth(), (req, res) => {
+  const { endpoint, keys } = req.body;
+  
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ error: 'Ungültige Subscription' });
+  }
+  
+  try {
+    db.prepare(`
+      INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+      VALUES (?, ?, ?, ?)
+    `).run(req.user.id, endpoint, keys.p256dh, keys.auth);
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Fehler beim Speichern' });
+  }
+});
+
+// Unsubscribe
+app.delete('/api/push/unsubscribe', auth(), (req, res) => {
+  db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(req.user.id);
+  res.json({ success: true });
+});
+
+// Send push notification (internal helper)
+async function sendPushNotification(userId, title, body, data = {}) {
+  // This would use web-push library in production
+  // For now, we'll use socket.io as fallback
+  io.emit(`notification-${userId}`, { title, body, data });
 }
 
 // ============ SOCKET.IO ============

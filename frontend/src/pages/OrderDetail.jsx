@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, MapPin, Clock, Package, Truck, CheckCircle, MessageCircle, Send, Phone, Headphones, User, FileText, Download } from 'lucide-react';
+import { ArrowLeft, MapPin, Clock, Package, Truck, CheckCircle, MessageCircle, Send, Phone, Headphones, User, FileText, Download, Star } from 'lucide-react';
+import RatingModal from '../components/RatingModal';
 import { io } from 'socket.io-client';
 import { useStore, api } from '../store';
 
@@ -17,10 +18,13 @@ export default function OrderDetail() {
   const [message, setMessage] = useState('');
   const [socket, setSocket] = useState(null);
   const [showChat, setShowChat] = useState(false);
+  const [showRating, setShowRating] = useState(false);
+  const [hasRated, setHasRated] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     fetchOrder(id);
+    checkRating();
     
     const s = io();
     s.emit('join-order', id);
@@ -40,6 +44,15 @@ export default function OrderDetail() {
     setSocket(s);
     return () => s.disconnect();
   }, [id]);
+
+  const checkRating = async () => {
+    try {
+      const { data } = await api.get(`/orders/${id}/rating`);
+      setHasRated(!!data);
+    } catch (e) {
+      setHasRated(false);
+    }
+  };
 
   useEffect(() => {
     if (showChat && messagesEndRef.current) {
@@ -299,7 +312,49 @@ export default function OrderDetail() {
             )}
           </section>
         )}
+
+        {/* Rating Section */}
+        {currentOrder.status === 'delivered' && currentOrder.driver_id && (
+          <section className="bg-white rounded-2xl p-4">
+            <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+              <Star size={18} className="text-amber-500" /> Bewertung
+            </h2>
+            
+            {hasRated ? (
+              <div className="text-center py-4">
+                <div className="flex justify-center gap-1 mb-2">
+                  {[1,2,3,4,5].map(s => (
+                    <Star key={s} size={24} className="text-amber-400 fill-amber-400" />
+                  ))}
+                </div>
+                <p className="text-sm text-gray-500">Danke für deine Bewertung! ⭐</p>
+              </div>
+            ) : (
+              <div className="text-center py-4">
+                <p className="text-sm text-gray-600 mb-4">
+                  Wie war deine Erfahrung mit {currentOrder.driver_name || 'deinem Fahrer'}?
+                </p>
+                <button
+                  onClick={() => setShowRating(true)}
+                  className="px-6 py-3 bg-gradient-to-r from-amber-400 to-orange-500 text-white font-bold rounded-xl flex items-center gap-2 mx-auto hover:shadow-lg transition-shadow"
+                >
+                  <Star size={18} /> Jetzt bewerten
+                </button>
+              </div>
+            )}
+          </section>
+        )}
       </div>
+
+      {/* Rating Modal */}
+      {showRating && (
+        <RatingModal
+          orderId={currentOrder.id}
+          driverName={currentOrder.driver_name}
+          onClose={() => setShowRating(false)}
+          onRated={() => { setHasRated(true); checkRating(); }}
+        />
+      )}
 
       {/* Chat Modal */}
       {showChat && hasDriver && (
