@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap, Wallet, Smartphone, AlertCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { useStore } from '../store';
+import { useStore, api } from '../store';
 
 // Generate time slots
 const generateTimeSlots = () => {
@@ -11,12 +11,10 @@ const generateTimeSlots = () => {
   const currentHour = now.getHours();
   const currentMin = now.getMinutes();
   
-  // Today's slots (from now + 30min, rounded to 30min intervals)
   let startHour = currentHour;
   let startMin = currentMin < 30 ? 30 : 0;
   if (currentMin >= 30) startHour++;
   
-  // If too late today, skip
   if (startHour < 22) {
     for (let h = startHour; h < 22; h++) {
       for (let m = (h === startHour ? startMin : 0); m < 60; m += 30) {
@@ -32,7 +30,6 @@ const generateTimeSlots = () => {
     }
   }
   
-  // Tomorrow's slots
   for (let h = 8; h < 22; h++) {
     for (let m = 0; m < 60; m += 30) {
       const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
@@ -49,15 +46,38 @@ const generateTimeSlots = () => {
   return slots;
 };
 
+// Payment method icons
+const PaymentIcon = ({ method }) => {
+  switch (method) {
+    case 'cash': return <Banknote size={24} />;
+    case 'card': return <CreditCard size={24} />;
+    case 'paypal': return <span className="text-xl font-bold text-blue-600">P</span>;
+    case 'klarna': return <span className="text-lg font-bold text-pink-500">K</span>;
+    case 'sofort': return <span className="text-lg font-bold text-orange-500">S</span>;
+    case 'googlepay': return <Smartphone size={24} />;
+    case 'applepay': return <Smartphone size={24} />;
+    default: return <Wallet size={24} />;
+  }
+};
+
+const paymentMethods = [
+  { id: 'cash', name: 'Bar bei Lieferung', description: 'Barzahlung an der Tür', online: false },
+  { id: 'card', name: 'Karte bei Lieferung', description: 'EC/Kreditkarte an der Tür', online: false },
+  { id: 'stripe', name: 'Online bezahlen', description: 'Kreditkarte, PayPal, Klarna & mehr', online: true, badge: 'Empfohlen' },
+];
+
 export default function Checkout() {
   const navigate = useNavigate();
-  const { cart, getCartTotal, addresses, selectedAddress, fetchAddresses, selectAddress, addAddress, createOrder } = useStore();
-  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [searchParams] = useSearchParams();
+  const { cart, getCartTotal, addresses, selectedAddress, fetchAddresses, selectAddress, addAddress, createOrder, clearCart } = useStore();
+  
+  const [paymentMethod, setPaymentMethod] = useState('stripe');
   const [notes, setNotes] = useState('');
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [newAddress, setNewAddress] = useState({ street: '', house_number: '', postal_code: '', instructions: '' });
   const [loading, setLoading] = useState(false);
-  const [deliveryType, setDeliveryType] = useState('asap'); // 'asap' or 'scheduled'
+  const [error, setError] = useState(null);
+  const [deliveryType, setDeliveryType] = useState('asap');
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [showTimeSlots, setShowTimeSlots] = useState(false);
   const timeSlots = generateTimeSlots();
@@ -68,6 +88,11 @@ export default function Checkout() {
 
   useEffect(() => {
     fetchAddresses();
+    
+    // Check for cancelled payment
+    if (searchParams.get('cancelled') === 'true') {
+      setError('Zahlung abgebrochen. Bitte versuche es erneut.');
+    }
   }, []);
 
   const handleAddAddress = async () => {
@@ -78,16 +103,55 @@ export default function Checkout() {
   };
 
   const handleOrder = async () => {
-    if (!selectedAddress) return;
-    setLoading(true);
-    try {
-      const order = await createOrder(selectedAddress.id, paymentMethod, notes);
-      navigate(`/orders/${order.id}`);
-    } catch (e) {
-      alert('Fehler bei der Bestellung');
+    if (!selectedAddress) {
+      setError('Bitte wähle eine Lieferadresse');
+      return;
     }
-    setLoading(false);
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const items = cart.map(item => ({ product_id: item.id, quantity: item.quantity }));
+      
+      if (paymentMethod === 'stripe') {
+        // Create Stripe checkout session
+        const { data } = await api.post('/checkout/create-session', {
+          address_id: selectedAddress.id,
+          items,
+          notes
+        });
+        
+        // Redirect to Stripe
+        if (data.url) {
+          window.location.href = data.url;
+        } else {
+          throw new Error('Keine Checkout-URL erhalten');
+        }
+      } else {
+        // Cash/Card at delivery - create order directly
+        const order = await createOrder(selectedAddress.id, paymentMethod, notes);
+        navigate(`/orders/${order.id}`);
+      }
+    } catch (e) {
+      console.error('Order error:', e);
+      setError(e.response?.data?.error || 'Fehler bei der Bestellung. Bitte versuche es erneut.');
+      setLoading(false);
+    }
   };
+
+  if (cart.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="text-center">
+          <AlertCircle size={48} className="mx-auto text-gray-400 mb-4" />
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Warenkorb ist leer</h2>
+          <p className="text-gray-600 mb-4">Füge Artikel hinzu, um zu bestellen.</p>
+          <Link to="/" className="text-rose-500 font-medium">Zum Shop →</Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 pb-36">
@@ -101,11 +165,22 @@ export default function Checkout() {
         </div>
       </header>
 
+      {/* Error Banner */}
+      {error && (
+        <div className="bg-red-50 border-b border-red-100 px-4 py-3">
+          <div className="max-w-lg mx-auto flex items-center gap-2 text-red-700">
+            <AlertCircle size={18} />
+            <span className="text-sm">{error}</span>
+            <button onClick={() => setError(null)} className="ml-auto text-red-500">✕</button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-lg mx-auto px-4 py-6 space-y-6">
         {/* Delivery Time */}
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <Clock size={20} className="text-primary-500" /> Lieferzeit
+            <Clock size={20} className="text-rose-500" /> Lieferzeit
           </h2>
           
           <div className="grid grid-cols-2 gap-3 mb-4">
@@ -113,11 +188,11 @@ export default function Checkout() {
               onClick={() => { setDeliveryType('asap'); setSelectedSlot(null); }}
               className={`p-4 rounded-xl border-2 transition-all ${
                 deliveryType === 'asap' 
-                  ? 'border-primary-500 bg-primary-50' 
+                  ? 'border-rose-500 bg-rose-50' 
                   : 'border-gray-200 hover:border-gray-300'
               }`}
             >
-              <Zap className={`mx-auto mb-2 ${deliveryType === 'asap' ? 'text-primary-500' : 'text-gray-400'}`} size={24} />
+              <Zap className={`mx-auto mb-2 ${deliveryType === 'asap' ? 'text-rose-500' : 'text-gray-400'}`} size={24} />
               <p className="font-semibold text-sm">Schnellstmöglich</p>
               <p className="text-xs text-gray-500">15-20 Minuten</p>
             </button>
@@ -126,11 +201,11 @@ export default function Checkout() {
               onClick={() => setShowTimeSlots(true)}
               className={`p-4 rounded-xl border-2 transition-all ${
                 deliveryType === 'scheduled' 
-                  ? 'border-primary-500 bg-primary-50' 
+                  ? 'border-rose-500 bg-rose-50' 
                   : 'border-gray-200 hover:border-gray-300'
               }`}
             >
-              <Calendar className={`mx-auto mb-2 ${deliveryType === 'scheduled' ? 'text-primary-500' : 'text-gray-400'}`} size={24} />
+              <Calendar className={`mx-auto mb-2 ${deliveryType === 'scheduled' ? 'text-rose-500' : 'text-gray-400'}`} size={24} />
               <p className="font-semibold text-sm">Vorbestellen</p>
               <p className="text-xs text-gray-500">
                 {selectedSlot ? selectedSlot.label : 'Zeit wählen'}
@@ -139,9 +214,9 @@ export default function Checkout() {
           </div>
 
           {deliveryType === 'asap' && (
-            <div className="flex items-center gap-3 p-3 bg-primary-50 rounded-xl">
-              <Zap className="text-primary-500" size={20} />
-              <p className="text-sm text-primary-700">Lieferung in <strong>15-20 Minuten</strong></p>
+            <div className="flex items-center gap-3 p-3 bg-rose-50 rounded-xl">
+              <Zap className="text-rose-500" size={20} />
+              <p className="text-sm text-rose-700">Lieferung in <strong>15-20 Minuten</strong></p>
             </div>
           )}
         </section>
@@ -175,7 +250,7 @@ export default function Checkout() {
                       }}
                       className={`w-full p-4 rounded-xl border-2 text-left transition-colors ${
                         selectedSlot?.id === slot.id 
-                          ? 'border-primary-500 bg-primary-50' 
+                          ? 'border-rose-500 bg-rose-50' 
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -191,7 +266,7 @@ export default function Checkout() {
         {/* Delivery Address */}
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <MapPin size={20} className="text-primary-500" /> Lieferadresse
+            <MapPin size={20} className="text-rose-500" /> Lieferadresse
           </h2>
 
           {addresses.map(addr => (
@@ -200,7 +275,7 @@ export default function Checkout() {
               onClick={() => selectAddress(addr)}
               className={`w-full text-left p-3 rounded-xl mb-2 border-2 transition-colors ${
                 selectedAddress?.id === addr.id 
-                  ? 'border-primary-500 bg-primary-50' 
+                  ? 'border-rose-500 bg-rose-50' 
                   : 'border-gray-200 hover:border-gray-300'
               }`}
             >
@@ -221,7 +296,7 @@ export default function Checkout() {
                 placeholder="Straße"
                 value={newAddress.street}
                 onChange={(e) => setNewAddress({ ...newAddress, street: e.target.value })}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
               />
               <div className="flex gap-3">
                 <input
@@ -229,14 +304,14 @@ export default function Checkout() {
                   placeholder="Hausnr."
                   value={newAddress.house_number}
                   onChange={(e) => setNewAddress({ ...newAddress, house_number: e.target.value })}
-                  className="w-1/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-1/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
                 <input
                   type="text"
                   placeholder="PLZ"
                   value={newAddress.postal_code}
                   onChange={(e) => setNewAddress({ ...newAddress, postal_code: e.target.value })}
-                  className="w-2/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-2/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
               </div>
               <input
@@ -244,7 +319,7 @@ export default function Checkout() {
                 placeholder="Hinweise für Fahrer (optional)"
                 value={newAddress.instructions}
                 onChange={(e) => setNewAddress({ ...newAddress, instructions: e.target.value })}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
               />
               <div className="flex gap-2">
                 <button
@@ -255,7 +330,7 @@ export default function Checkout() {
                 </button>
                 <button
                   onClick={handleAddAddress}
-                  className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600"
+                  className="flex-1 py-3 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600"
                 >
                   Speichern
                 </button>
@@ -264,7 +339,7 @@ export default function Checkout() {
           ) : (
             <button
               onClick={() => setShowAddressForm(true)}
-              className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-primary-500 hover:text-primary-500 transition-colors"
+              className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 hover:border-rose-500 hover:text-rose-500 transition-colors"
             >
               <Plus size={20} /> Neue Adresse
             </button>
@@ -275,27 +350,52 @@ export default function Checkout() {
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-4">Zahlungsart</h2>
           
-          <div className="space-y-2">
-            <button
-              onClick={() => setPaymentMethod('cash')}
-              className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${
-                paymentMethod === 'cash' ? 'border-primary-500 bg-primary-50' : 'border-gray-200'
-              }`}
-            >
-              <Banknote size={24} className={paymentMethod === 'cash' ? 'text-primary-500' : 'text-gray-400'} />
-              <span className="font-medium">Bar bei Lieferung</span>
-            </button>
-            
-            <button
-              onClick={() => setPaymentMethod('card')}
-              className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${
-                paymentMethod === 'card' ? 'border-primary-500 bg-primary-50' : 'border-gray-200'
-              }`}
-            >
-              <CreditCard size={24} className={paymentMethod === 'card' ? 'text-primary-500' : 'text-gray-400'} />
-              <span className="font-medium">Karte bei Lieferung</span>
-            </button>
+          <div className="space-y-3">
+            {paymentMethods.map(method => (
+              <button
+                key={method.id}
+                onClick={() => setPaymentMethod(method.id)}
+                className={`w-full flex items-center gap-3 p-4 rounded-xl border-2 transition-colors ${
+                  paymentMethod === method.id 
+                    ? 'border-rose-500 bg-rose-50' 
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                  paymentMethod === method.id ? 'bg-rose-100 text-rose-500' : 'bg-gray-100 text-gray-400'
+                }`}>
+                  <PaymentIcon method={method.id} />
+                </div>
+                <div className="flex-1 text-left">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{method.name}</span>
+                    {method.badge && (
+                      <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+                        {method.badge}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">{method.description}</p>
+                </div>
+                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                  paymentMethod === method.id ? 'border-rose-500 bg-rose-500' : 'border-gray-300'
+                }`}>
+                  {paymentMethod === method.id && (
+                    <div className="w-2 h-2 bg-white rounded-full" />
+                  )}
+                </div>
+              </button>
+            ))}
           </div>
+          
+          {paymentMethod === 'stripe' && (
+            <div className="mt-4 p-3 bg-blue-50 rounded-xl">
+              <p className="text-sm text-blue-700">
+                💳 Du wirst zu unserem sicheren Zahlungsanbieter weitergeleitet. 
+                Unterstützte Zahlungsarten: Kreditkarte, PayPal, Klarna, Sofortüberweisung.
+              </p>
+            </div>
+          )}
         </section>
 
         {/* Notes */}
@@ -304,9 +404,9 @@ export default function Checkout() {
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Besondere Wünsche..."
+            placeholder="Besondere Wünsche oder Hinweise für den Fahrer..."
             rows={2}
-            className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+            className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
           />
         </section>
 
@@ -320,27 +420,51 @@ export default function Checkout() {
               <span className="font-medium">{(item.price * item.quantity).toFixed(2)} €</span>
             </div>
           ))}
+          
+          <div className="border-t border-gray-100 mt-2 pt-2 space-y-1">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Zwischensumme</span>
+              <span>{subtotal.toFixed(2)} €</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Lieferung</span>
+              <span>{deliveryFee > 0 ? `${deliveryFee.toFixed(2)} €` : <span className="text-green-600">Kostenlos</span>}</span>
+            </div>
+            {deliveryFee > 0 && subtotal < 20 && (
+              <p className="text-xs text-gray-400 mt-1">
+                Noch {(20 - subtotal).toFixed(2)} € für kostenlose Lieferung
+              </p>
+            )}
+          </div>
         </section>
       </div>
 
       {/* Order Button */}
-      <div className="fixed bottom-16 left-0 right-0 bg-white border-t border-gray-200 safe-bottom">
+      <div className="fixed bottom-16 lg:bottom-0 left-0 right-0 bg-white border-t border-gray-200 safe-bottom z-30">
         <div className="max-w-lg mx-auto px-4 py-4">
           <div className="flex justify-between mb-3">
-            <span className="text-gray-600">Gesamt</span>
-            <span className="font-bold text-lg">{total.toFixed(2)} €</span>
+            <span className="text-gray-600">Gesamtsumme</span>
+            <span className="font-bold text-xl">{total.toFixed(2)} €</span>
           </div>
           <button
             onClick={handleOrder}
             disabled={!selectedAddress || loading}
-            className="w-full bg-primary-500 hover:bg-primary-600 disabled:bg-gray-300 text-white font-semibold py-4 rounded-2xl transition-colors shadow-lg shadow-primary-500/30 flex items-center justify-center gap-2"
+            className="w-full bg-rose-500 hover:bg-rose-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-2xl transition-colors shadow-lg shadow-rose-500/30 flex items-center justify-center gap-2"
           >
             {loading ? (
               <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : paymentMethod === 'stripe' ? (
+              <>Zur Zahlung <ChevronRight size={20} /></>
             ) : (
               <>Jetzt bestellen <ChevronRight size={20} /></>
             )}
           </button>
+          
+          {paymentMethod === 'stripe' && (
+            <p className="text-xs text-center text-gray-400 mt-2">
+              Sichere Zahlung über Stripe
+            </p>
+          )}
         </div>
       </div>
     </div>
