@@ -1,0 +1,16 @@
+run = "npm run start"
+entrypoint = "backend/server.js"
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PORT = "3000"
+
+[deployment]
+run = ["sh", "-c", "cd backend && npm start"]
+build = ["sh", "-c", "npm install && cd backend && npm install && cd ../frontend && npm install && npm run build"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80
