@@ -88,6 +88,8 @@ db.exec(`
     delivery_fee REAL DEFAULT 2.99,
     total REAL NOT NULL,
     payment_method TEXT DEFAULT 'cash',
+    payment_status TEXT DEFAULT 'pending',
+    stripe_session_id TEXT,
     notes TEXT,
     estimated_delivery TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -110,7 +112,7 @@ db.exec(`
     FOREIGN KEY (product_id) REFERENCES products(id)
   );
 
-  -- Chat Messages
+  -- Order Chat Messages (Driver <-> Customer)
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id INTEGER NOT NULL,
@@ -121,6 +123,33 @@ db.exec(`
     FOREIGN KEY (sender_id) REFERENCES users(id)
   );
 
+  -- Support Tickets (AI Chat + Escalation)
+  CREATE TABLE IF NOT EXISTS support_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    order_id INTEGER,
+    status TEXT DEFAULT 'open',
+    escalated INTEGER DEFAULT 0,
+    escalation_reason TEXT,
+    assigned_to INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (assigned_to) REFERENCES users(id)
+  );
+
+  -- Support Chat Messages (AI + Human)
+  CREATE TABLE IF NOT EXISTS support_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    sender_type TEXT NOT NULL,
+    sender_id INTEGER,
+    message TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES support_tickets(id)
+  );
+
   -- Store Settings
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -128,8 +157,19 @@ db.exec(`
   );
 `);
 
+// Add new columns if they don't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'pending'`);
+} catch(e) {}
+try {
+  db.exec(`ALTER TABLE orders ADD COLUMN stripe_session_id TEXT`);
+} catch(e) {}
+
 const JWT_SECRET = process.env.JWT_SECRET || 'speeti-secret-key-2024';
 const PORT = process.env.PORT || 3000;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 
 // Middleware
 app.use(cors());
@@ -166,7 +206,7 @@ app.post('/api/auth/register', async (req, res) => {
     const stmt = db.prepare('INSERT INTO users (email, password, name, phone) VALUES (?, ?, ?, ?)');
     const result = stmt.run(email, hash, name, phone || null);
     
-    const token = jwt.sign({ id: result.lastInsertRowid, email, role: 'customer' }, JWT_SECRET);
+    const token = jwt.sign({ id: result.lastInsertRowid, email, name, role: 'customer' }, JWT_SECRET);
     res.json({ token, user: { id: result.lastInsertRowid, email, name, role: 'customer' } });
   } catch (e) {
     res.status(400).json({ error: 'Email bereits registriert' });
@@ -182,8 +222,8 @@ app.post('/api/auth/login', async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(401).json({ error: 'Ungültige Anmeldedaten' });
   
-  const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET);
-  res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, JWT_SECRET);
+  res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, phone: user.phone } });
 });
 
 app.get('/api/auth/me', auth(), (req, res) => {
@@ -307,9 +347,6 @@ app.get('/api/orders', auth(), (req, res) => {
            ORDER BY o.created_at DESC`;
     params = [];
   } else if (req.user.role === 'driver') {
-    // Drivers see: 
-    // 1. All unassigned confirmed orders (available to pick up)
-    // 2. All orders assigned to them (regardless of status)
     sql = `SELECT o.*, u.name as customer_name, u.phone as customer_phone,
            a.street, a.house_number, a.postal_code, a.city, a.instructions
            FROM orders o 
@@ -322,15 +359,16 @@ app.get('/api/orders', auth(), (req, res) => {
              o.created_at DESC`;
     params = [req.user.id];
   } else {
-    sql = `SELECT o.*, a.street, a.house_number, a.postal_code, a.city
+    sql = `SELECT o.*, a.street, a.house_number, a.postal_code, a.city,
+           d.name as driver_name, d.phone as driver_phone
            FROM orders o JOIN addresses a ON o.address_id = a.id
+           LEFT JOIN users d ON o.driver_id = d.id
            WHERE o.user_id = ? ORDER BY o.created_at DESC`;
     params = [req.user.id];
   }
   
   const orders = db.prepare(sql).all(...params);
   
-  // Add items to each order
   orders.forEach(order => {
     order.items = db.prepare(`
       SELECT oi.*, p.name, p.image, p.unit 
@@ -376,7 +414,6 @@ app.get('/api/orders/:id', auth(), (req, res) => {
 app.post('/api/orders', auth(), (req, res) => {
   const { address_id, items, payment_method, notes } = req.body;
   
-  // Calculate totals
   let subtotal = 0;
   const productIds = items.map(i => i.product_id);
   const products = db.prepare(`SELECT * FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`).all(...productIds);
@@ -388,21 +425,18 @@ app.post('/api/orders', auth(), (req, res) => {
   
   const delivery_fee = 2.99;
   const total = subtotal + delivery_fee;
-  const estimated = new Date(Date.now() + 20 * 60000).toISOString(); // 20 min
+  const estimated = new Date(Date.now() + 20 * 60000).toISOString();
   
-  // Auto-confirm order (skip pending for now)
   const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?)`);
   const orderResult = orderStmt.run(req.user.id, address_id, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated);
   const orderId = orderResult.lastInsertRowid;
   
-  // Insert items
   const itemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
   items.forEach(item => {
     const product = products.find(p => p.id === item.product_id);
     if (product) itemStmt.run(orderId, item.product_id, item.quantity, product.price);
   });
   
-  // Notify via socket
   io.emit('new-order', { orderId });
   
   res.json({ id: orderId, total, estimated_delivery: estimated });
@@ -435,37 +469,386 @@ app.patch('/api/orders/:id/status', auth(['admin', 'driver']), (req, res) => {
   
   db.prepare(update).run(...params);
   
-  // Notify via socket
   io.emit('order-update', { orderId: parseInt(req.params.id), status });
   
   res.json({ success: true });
 });
 
-// Pick item
 app.patch('/api/orders/:id/items/:itemId/pick', auth(['driver']), (req, res) => {
   db.prepare('UPDATE order_items SET picked = 1 WHERE id = ? AND order_id = ?').run(req.params.itemId, req.params.id);
   io.emit('item-picked', { orderId: parseInt(req.params.id), itemId: parseInt(req.params.itemId) });
   res.json({ success: true });
 });
 
-// ============ CHAT ============
+// ============ ORDER CHAT (Driver <-> Customer) ============
 
 app.post('/api/orders/:id/messages', auth(), (req, res) => {
   const { message } = req.body;
   const stmt = db.prepare('INSERT INTO messages (order_id, sender_id, message) VALUES (?, ?, ?)');
   const result = stmt.run(req.params.id, req.user.id, message);
   
+  const user = db.prepare('SELECT name, role FROM users WHERE id = ?').get(req.user.id);
+  
   const msg = {
     id: result.lastInsertRowid,
     order_id: parseInt(req.params.id),
     sender_id: req.user.id,
-    sender_name: req.user.name || 'User',
+    sender_name: user?.name || 'User',
+    sender_role: user?.role || 'customer',
     message,
     created_at: new Date().toISOString()
   };
   
-  io.emit('new-message', msg);
+  io.to(`order-${req.params.id}`).emit('new-message', msg);
   res.json(msg);
+});
+
+app.get('/api/orders/:id/messages', auth(), (req, res) => {
+  const messages = db.prepare(`
+    SELECT m.*, u.name as sender_name, u.role as sender_role
+    FROM messages m JOIN users u ON m.sender_id = u.id
+    WHERE m.order_id = ? ORDER BY m.created_at
+  `).all(req.params.id);
+  res.json(messages);
+});
+
+// ============ SUPPORT CHAT (AI + Escalation) ============
+
+// AI System prompt for customer support
+const SUPPORT_SYSTEM_PROMPT = `Du bist der freundliche KI-Kundenservice-Assistent von Speeti, einem Lieferdienst in Münster (ähnlich wie Flink/Gorillas).
+
+DEINE AUFGABEN:
+- Beantworte Fragen zu Bestellungen, Lieferzeiten, Produkten
+- Hilf bei Problemen mit Bestellungen (verspätet, falsche Artikel, etc.)
+- Erkläre Rückerstattungen und Stornierungen
+- Sei freundlich, hilfsbereit und lösungsorientiert
+
+WICHTIGE INFOS:
+- Lieferzeit: ca. 15-20 Minuten
+- Liefergebühr: 2,99€
+- Liefergebiet: Münster und Umgebung
+- Öffnungszeiten: 8:00 - 23:00 Uhr
+- Mindestbestellwert: keiner
+
+BEI FOLGENDEN SITUATIONEN ESKALIERE ZU EINEM MENSCHEN (antworte mit [ESKALATION]):
+- Kunde ist sehr verärgert/verwendet Schimpfwörter
+- Rückerstattung über 20€ gewünscht
+- Rechtliche Fragen oder Beschwerden
+- Technische Probleme die du nicht lösen kannst
+- Kunde fragt explizit nach einem Menschen
+- Sicherheitsfragen (Account gehackt, etc.)
+
+Antworte immer auf Deutsch. Sei prägnant aber hilfreich. Maximal 2-3 Sätze pro Antwort.`;
+
+// Get or create support ticket
+app.post('/api/support/ticket', auth(), async (req, res) => {
+  const { order_id } = req.body;
+  
+  // Check for existing open ticket
+  let ticket = db.prepare(`
+    SELECT * FROM support_tickets 
+    WHERE user_id = ? AND status = 'open' 
+    ORDER BY created_at DESC LIMIT 1
+  `).get(req.user.id);
+  
+  if (!ticket) {
+    const stmt = db.prepare('INSERT INTO support_tickets (user_id, order_id) VALUES (?, ?)');
+    const result = stmt.run(req.user.id, order_id || null);
+    ticket = { id: result.lastInsertRowid, user_id: req.user.id, order_id, status: 'open', escalated: 0 };
+    
+    // Send welcome message
+    const welcomeMsg = order_id 
+      ? `Hallo! 👋 Ich sehe, du hast eine Frage zu Bestellung #${order_id}. Wie kann ich dir helfen?`
+      : 'Hallo! 👋 Willkommen beim Speeti Support. Wie kann ich dir heute helfen?';
+    
+    db.prepare('INSERT INTO support_messages (ticket_id, sender_type, message) VALUES (?, ?, ?)')
+      .run(ticket.id, 'ai', welcomeMsg);
+  }
+  
+  // Get messages
+  const messages = db.prepare(`
+    SELECT * FROM support_messages WHERE ticket_id = ? ORDER BY created_at
+  `).all(ticket.id);
+  
+  res.json({ ticket, messages });
+});
+
+// Send message to support (AI responds)
+app.post('/api/support/message', auth(), async (req, res) => {
+  const { ticket_id, message } = req.body;
+  
+  // Verify ticket belongs to user
+  const ticket = db.prepare('SELECT * FROM support_tickets WHERE id = ? AND user_id = ?').get(ticket_id, req.user.id);
+  if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+  
+  // Save user message
+  db.prepare('INSERT INTO support_messages (ticket_id, sender_type, sender_id, message) VALUES (?, ?, ?, ?)')
+    .run(ticket_id, 'user', req.user.id, message);
+  
+  // If already escalated, notify admin
+  if (ticket.escalated) {
+    io.emit('support-message', { ticket_id, sender: 'user', message });
+    return res.json({ 
+      response: 'Deine Nachricht wurde an unser Support-Team weitergeleitet. Wir melden uns schnellstmöglich bei dir.',
+      escalated: true 
+    });
+  }
+  
+  // Get conversation history
+  const history = db.prepare('SELECT sender_type, message FROM support_messages WHERE ticket_id = ? ORDER BY created_at').all(ticket_id);
+  
+  // Get order context if available
+  let orderContext = '';
+  if (ticket.order_id) {
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(ticket.order_id);
+    if (order) {
+      orderContext = `\n\nKONTEXT - Bestellung #${order.id}:
+- Status: ${order.status}
+- Gesamtbetrag: ${order.total}€
+- Erstellt: ${order.created_at}
+- Lieferadresse bekannt`;
+    }
+  }
+  
+  // Call OpenAI API
+  let aiResponse = '';
+  let shouldEscalate = false;
+  
+  if (OPENAI_API_KEY) {
+    try {
+      const openaiMessages = [
+        { role: 'system', content: SUPPORT_SYSTEM_PROMPT + orderContext },
+        ...history.map(m => ({
+          role: m.sender_type === 'user' ? 'user' : 'assistant',
+          content: m.message
+        }))
+      ];
+      
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: openaiMessages,
+          max_tokens: 300,
+          temperature: 0.7
+        })
+      });
+      
+      const data = await response.json();
+      aiResponse = data.choices?.[0]?.message?.content || '';
+      
+      // Check for escalation trigger
+      if (aiResponse.includes('[ESKALATION]')) {
+        shouldEscalate = true;
+        aiResponse = 'Ich verstehe, dass du mit einem echten Mitarbeiter sprechen möchtest. Ich leite dich jetzt an unser Support-Team weiter. Jemand wird sich in Kürze bei dir melden. 🙋‍♂️';
+      }
+    } catch (e) {
+      console.error('OpenAI error:', e);
+      aiResponse = 'Entschuldigung, ich habe gerade technische Schwierigkeiten. Bitte versuche es in ein paar Minuten erneut oder kontaktiere uns unter support@speeti.de';
+    }
+  } else {
+    // Fallback without OpenAI - basic keyword matching
+    const lowerMsg = message.toLowerCase();
+    if (lowerMsg.includes('mensch') || lowerMsg.includes('mitarbeiter') || lowerMsg.includes('support')) {
+      shouldEscalate = true;
+      aiResponse = 'Ich leite dich an einen Mitarbeiter weiter. Bitte warte einen Moment. 🙋‍♂️';
+    } else if (lowerMsg.includes('lieferzeit') || lowerMsg.includes('wie lange')) {
+      aiResponse = 'Die Lieferung dauert normalerweise 15-20 Minuten. Du kannst den Status deiner Bestellung jederzeit in der App verfolgen! 🚴';
+    } else if (lowerMsg.includes('stornieren') || lowerMsg.includes('abbrechen')) {
+      aiResponse = 'Um eine Bestellung zu stornieren, gehe zu "Meine Bestellungen" und tippe auf die Bestellung. Falls sie schon in Bearbeitung ist, kontaktiere bitte deinen Fahrer direkt.';
+    } else if (lowerMsg.includes('bezahlung') || lowerMsg.includes('zahlung')) {
+      aiResponse = 'Wir akzeptieren Barzahlung, Kreditkarte, PayPal, Google Pay, Apple Pay, Klarna und Sofortüberweisung! 💳';
+    } else {
+      aiResponse = 'Danke für deine Nachricht! Ich bin ein KI-Assistent und helfe dir gerne. Kannst du mir mehr Details geben, damit ich dir besser helfen kann?';
+    }
+  }
+  
+  // Save AI response
+  db.prepare('INSERT INTO support_messages (ticket_id, sender_type, message) VALUES (?, ?, ?)')
+    .run(ticket_id, 'ai', aiResponse);
+  
+  // Handle escalation
+  if (shouldEscalate) {
+    db.prepare('UPDATE support_tickets SET escalated = 1, escalation_reason = ? WHERE id = ?')
+      .run('User requested or AI triggered', ticket_id);
+    
+    io.emit('support-escalation', { ticket_id, user_id: req.user.id });
+  }
+  
+  res.json({ response: aiResponse, escalated: shouldEscalate });
+});
+
+// Get all support tickets (admin)
+app.get('/api/admin/support', auth(['admin']), (req, res) => {
+  const tickets = db.prepare(`
+    SELECT t.*, u.name as user_name, u.email as user_email,
+           (SELECT COUNT(*) FROM support_messages WHERE ticket_id = t.id AND sender_type = 'user') as message_count
+    FROM support_tickets t
+    JOIN users u ON t.user_id = u.id
+    ORDER BY t.escalated DESC, t.created_at DESC
+  `).all();
+  res.json(tickets);
+});
+
+// Get ticket messages (admin)
+app.get('/api/admin/support/:id', auth(['admin']), (req, res) => {
+  const ticket = db.prepare(`
+    SELECT t.*, u.name as user_name, u.email as user_email
+    FROM support_tickets t
+    JOIN users u ON t.user_id = u.id
+    WHERE t.id = ?
+  `).get(req.params.id);
+  
+  if (!ticket) return res.status(404).json({ error: 'Ticket nicht gefunden' });
+  
+  const messages = db.prepare('SELECT * FROM support_messages WHERE ticket_id = ? ORDER BY created_at').all(req.params.id);
+  
+  res.json({ ticket, messages });
+});
+
+// Admin reply to ticket
+app.post('/api/admin/support/:id/reply', auth(['admin']), (req, res) => {
+  const { message } = req.body;
+  
+  db.prepare('INSERT INTO support_messages (ticket_id, sender_type, sender_id, message) VALUES (?, ?, ?, ?)')
+    .run(req.params.id, 'admin', req.user.id, message);
+  
+  io.emit('support-message', { ticket_id: parseInt(req.params.id), sender: 'admin', message });
+  
+  res.json({ success: true });
+});
+
+// Close ticket
+app.patch('/api/admin/support/:id/close', auth(['admin']), (req, res) => {
+  db.prepare('UPDATE support_tickets SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .run('closed', req.params.id);
+  res.json({ success: true });
+});
+
+// ============ STRIPE PAYMENTS ============
+
+// Create checkout session
+app.post('/api/checkout/create-session', auth(), async (req, res) => {
+  if (!STRIPE_SECRET_KEY) {
+    return res.status(500).json({ error: 'Stripe nicht konfiguriert' });
+  }
+  
+  const { address_id, items, notes } = req.body;
+  
+  // Calculate totals
+  let subtotal = 0;
+  const productIds = items.map(i => i.product_id);
+  const products = db.prepare(`SELECT * FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`).all(...productIds);
+  
+  const lineItems = [];
+  items.forEach(item => {
+    const product = products.find(p => p.id === item.product_id);
+    if (product) {
+      subtotal += product.price * item.quantity;
+      lineItems.push({
+        price_data: {
+          currency: 'eur',
+          product_data: {
+            name: product.name,
+            images: product.image ? [product.image] : []
+          },
+          unit_amount: Math.round(product.price * 100)
+        },
+        quantity: item.quantity
+      });
+    }
+  });
+  
+  // Add delivery fee
+  lineItems.push({
+    price_data: {
+      currency: 'eur',
+      product_data: { name: 'Liefergebühr' },
+      unit_amount: 299
+    },
+    quantity: 1
+  });
+  
+  const total = subtotal + 2.99;
+  
+  // Create pending order
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, payment_status, notes, estimated_delivery) VALUES (?, ?, 'pending', ?, 2.99, ?, 'stripe', 'pending', ?, ?)`);
+  const estimated = new Date(Date.now() + 20 * 60000).toISOString();
+  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, total, notes || null, estimated);
+  const orderId = orderResult.lastInsertRowid;
+  
+  // Insert items
+  const itemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
+  items.forEach(item => {
+    const product = products.find(p => p.id === item.product_id);
+    if (product) itemStmt.run(orderId, item.product_id, item.quantity, product.price);
+  });
+  
+  try {
+    const stripe = require('stripe')(STRIPE_SECRET_KEY);
+    
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'klarna', 'sofort', 'paypal'],
+      line_items: lineItems,
+      mode: 'payment',
+      success_url: `${req.headers.origin}/orders/${orderId}?success=true`,
+      cancel_url: `${req.headers.origin}/checkout?cancelled=true`,
+      metadata: { order_id: orderId.toString() },
+      payment_intent_data: {
+        metadata: { order_id: orderId.toString() }
+      },
+      locale: 'de'
+    });
+    
+    // Save session ID
+    db.prepare('UPDATE orders SET stripe_session_id = ? WHERE id = ?').run(session.id, orderId);
+    
+    res.json({ sessionId: session.id, url: session.url, orderId });
+  } catch (e) {
+    console.error('Stripe error:', e);
+    // Delete pending order on failure
+    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    res.status(500).json({ error: 'Checkout-Fehler: ' + e.message });
+  }
+});
+
+// Stripe webhook
+app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!STRIPE_SECRET_KEY) return res.status(400).send('Stripe nicht konfiguriert');
+  
+  const stripe = require('stripe')(STRIPE_SECRET_KEY);
+  const sig = req.headers['stripe-signature'];
+  
+  let event;
+  try {
+    if (STRIPE_WEBHOOK_SECRET) {
+      event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+    } else {
+      event = JSON.parse(req.body);
+    }
+  } catch (e) {
+    console.error('Webhook error:', e);
+    return res.status(400).send(`Webhook Error: ${e.message}`);
+  }
+  
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const orderId = session.metadata?.order_id;
+    
+    if (orderId) {
+      db.prepare('UPDATE orders SET status = ?, payment_status = ? WHERE id = ?')
+        .run('confirmed', 'paid', orderId);
+      
+      io.emit('new-order', { orderId: parseInt(orderId) });
+    }
+  }
+  
+  res.json({ received: true });
 });
 
 // ============ ADMIN: USERS/DRIVERS ============
@@ -500,7 +883,9 @@ app.get('/api/admin/stats', auth(['admin']), (req, res) => {
     pending_orders: db.prepare("SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'confirmed', 'picking')").get().count,
     total_customers: db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'customer'").get().count,
     total_products: db.prepare("SELECT COUNT(*) as count FROM products").get().count,
-    total_drivers: db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'driver'").get().count
+    total_drivers: db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'driver'").get().count,
+    open_tickets: db.prepare("SELECT COUNT(*) as count FROM support_tickets WHERE status = 'open'").get().count,
+    escalated_tickets: db.prepare("SELECT COUNT(*) as count FROM support_tickets WHERE escalated = 1 AND status = 'open'").get().count
   };
   
   res.json(stats);
@@ -522,12 +907,17 @@ app.put('/api/admin/settings', auth(['admin']), (req, res) => {
   res.json({ success: true });
 });
 
-// Socket.io connection
+// ============ SOCKET.IO ============
+
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
   
   socket.on('join-order', (orderId) => {
     socket.join(`order-${orderId}`);
+  });
+  
+  socket.on('join-support', (ticketId) => {
+    socket.join(`support-${ticketId}`);
   });
   
   socket.on('disconnect', () => {

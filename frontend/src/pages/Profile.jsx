@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, Package, LogOut, ChevronRight, User, Phone, Mail, Settings, HelpCircle, Shield } from 'lucide-react';
+import { ArrowLeft, MapPin, Package, LogOut, ChevronRight, User, Phone, Mail, Settings, HelpCircle, Shield, Headphones } from 'lucide-react';
 import { useStore } from '../store';
 
 export default function Profile() {
@@ -128,11 +128,11 @@ export default function Profile() {
               <ChevronRight size={20} className="text-gray-400" />
             </button>
             
-            <button className="w-full flex items-center gap-4 px-4 py-3 hover:bg-gray-50 transition-colors">
-              <HelpCircle size={20} className="text-gray-400" />
-              <span className="flex-1 text-left text-sm font-medium text-gray-900">Hilfe & Support</span>
+            <Link to="/support" className="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 transition-colors">
+              <Headphones size={20} className="text-rose-500" />
+              <span className="flex-1 text-sm font-medium text-gray-900">Hilfe & Support</span>
               <ChevronRight size={20} className="text-gray-400" />
-            </button>
+            </Link>
             
             <button className="w-full flex items-center gap-4 px-4 py-3 hover:bg-gray-50 transition-colors">
               <Shield size={20} className="text-gray-400" />

@@ -429,6 +429,39 @@ export default function Driver() {
 
             {/* Content */}
             <div className="p-4 space-y-4">
+              {/* Customer Contact Card */}
+              <div className="bg-white border border-gray-200 rounded-2xl p-4">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="w-14 h-14 bg-gradient-to-br from-rose-400 to-rose-600 rounded-full flex items-center justify-center text-white text-xl font-bold">
+                    {selectedOrder.customer_name?.charAt(0) || '?'}
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-semibold text-gray-900">{selectedOrder.customer_name}</p>
+                    <p className="text-sm text-gray-500">{selectedOrder.customer_phone || 'Keine Nummer'}</p>
+                  </div>
+                </div>
+                
+                {/* Contact Buttons */}
+                <div className="grid grid-cols-2 gap-3">
+                  {selectedOrder.customer_phone && (
+                    <a
+                      href={`tel:${selectedOrder.customer_phone}`}
+                      className="flex items-center justify-center gap-2 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-colors"
+                    >
+                      <Phone size={18} />
+                      Anrufen
+                    </a>
+                  )}
+                  <button
+                    onClick={() => document.getElementById('driver-chat-section')?.scrollIntoView({ behavior: 'smooth' })}
+                    className="flex items-center justify-center gap-2 py-3 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 transition-colors"
+                  >
+                    <MessageCircle size={18} />
+                    Chat
+                  </button>
+                </div>
+              </div>
+
               {/* Address Card */}
               <div className="bg-white border border-gray-200 rounded-2xl p-4">
                 <div className="flex items-start justify-between">
@@ -437,7 +470,7 @@ export default function Driver() {
                     <p className="text-sm text-gray-500">{selectedOrder.postal_code} {selectedOrder.city}</p>
                     {selectedOrder.instructions && (
                       <p className="text-sm text-amber-600 mt-2 bg-amber-50 px-2 py-1 rounded inline-block">
-                        {selectedOrder.instructions}
+                        📝 {selectedOrder.instructions}
                       </p>
                     )}
                   </div>
@@ -487,7 +520,7 @@ export default function Driver() {
               </div>
 
               {/* Chat */}
-              <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
+              <div id="driver-chat-section" className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
                 <div className="p-4 border-b border-gray-100">
                   <span className="font-semibold">Chat mit Kunde</span>
                 </div>

@@ -6,7 +6,8 @@ import {
   TrendingUp, DollarSign, Clock, CheckCircle, AlertCircle, MapPin, Phone,
   Calendar, BarChart3, ArrowUpRight, ArrowDownRight, Filter, Download,
   Printer, RefreshCw, Bell, ChevronDown, ChevronRight, Copy, ExternalLink,
-  Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer
+  Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer, Headphones,
+  MessageCircle, Bot, User, Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useStore, api } from '../store';
@@ -18,6 +19,7 @@ const tabs = [
   { id: 'categories', label: 'Kategorien', icon: Grid3X3 },
   { id: 'drivers', label: 'Fahrer', icon: Truck },
   { id: 'customers', label: 'Kunden', icon: Users },
+  { id: 'support', label: 'Support', icon: Headphones, supportBadge: true },
   { id: 'analytics', label: 'Statistiken', icon: BarChart3 },
   { id: 'settings', label: 'Einstellungen', icon: Settings },
 ];
@@ -47,6 +49,10 @@ export default function Admin() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderFilter, setOrderFilter] = useState('all');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [selectedTicket, setSelectedTicket] = useState(null);
+  const [ticketMessages, setTicketMessages] = useState([]);
+  const [supportReply, setSupportReply] = useState('');
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -61,24 +67,27 @@ export default function Admin() {
 
   const loadData = async () => {
     try {
-      const [statsRes, ordersRes, productsRes, catsRes, usersRes] = await Promise.all([
+      const [statsRes, ordersRes, productsRes, catsRes, usersRes, supportRes] = await Promise.all([
         api.get('/admin/stats'),
         api.get('/orders'),
         api.get('/products'),
         api.get('/categories'),
-        api.get('/admin/users')
+        api.get('/admin/users'),
+        api.get('/admin/support').catch(() => ({ data: [] }))
       ]);
       setStats(statsRes.data);
       setOrders(ordersRes.data);
       setProducts(productsRes.data);
       setCategories(catsRes.data);
       setUsers(usersRes.data);
+      setSupportTickets(supportRes.data);
     } catch (e) {
       console.error(e);
     }
   };
 
   const pendingCount = orders.filter(o => ['pending', 'confirmed', 'picking'].includes(o.status)).length;
+  const escalatedCount = supportTickets.filter(t => t.escalated && t.status === 'open').length;
 
   // ============ DASHBOARD ============
   const DashboardTab = () => (
@@ -865,6 +874,203 @@ export default function Admin() {
     </div>
   );
 
+  // ============ SUPPORT ============
+  const SupportTab = () => {
+    const openTickets = supportTickets.filter(t => t.status === 'open');
+    const closedTickets = supportTickets.filter(t => t.status === 'closed');
+    
+    const loadTicketMessages = async (ticketId) => {
+      try {
+        const { data } = await api.get(`/admin/support/${ticketId}`);
+        setSelectedTicket(data.ticket);
+        setTicketMessages(data.messages);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    
+    const sendReply = async () => {
+      if (!supportReply.trim() || !selectedTicket) return;
+      try {
+        await api.post(`/admin/support/${selectedTicket.id}/reply`, { message: supportReply });
+        setSupportReply('');
+        loadTicketMessages(selectedTicket.id);
+      } catch (e) {
+        alert('Fehler beim Senden');
+      }
+    };
+    
+    const closeTicket = async (ticketId) => {
+      try {
+        await api.patch(`/admin/support/${ticketId}/close`);
+        setSelectedTicket(null);
+        loadData();
+      } catch (e) {
+        alert('Fehler');
+      }
+    };
+    
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold">Support-Tickets</h2>
+            <p className="text-sm text-gray-500">{openTickets.length} offene Tickets, {closedTickets.length} geschlossen</p>
+          </div>
+          <button onClick={loadData} className="p-2 hover:bg-gray-100 rounded-lg">
+            <RefreshCw size={18} />
+          </button>
+        </div>
+
+        {/* Escalation Alert */}
+        {escalatedCount > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
+            <AlertCircle className="text-red-500" size={24} />
+            <div className="flex-1">
+              <p className="font-semibold text-red-800">{escalatedCount} eskalierte Tickets</p>
+              <p className="text-sm text-red-600">Diese Kunden wollen mit einem echten Mitarbeiter sprechen</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid lg:grid-cols-2 gap-4">
+          {/* Ticket List */}
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-gray-100">
+              <span className="font-semibold">Offene Tickets ({openTickets.length})</span>
+            </div>
+            <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
+              {openTickets.length === 0 ? (
+                <div className="p-8 text-center text-gray-400">
+                  <Headphones size={40} className="mx-auto mb-2 opacity-50" />
+                  <p>Keine offenen Tickets</p>
+                </div>
+              ) : (
+                openTickets.map(ticket => (
+                  <div
+                    key={ticket.id}
+                    onClick={() => loadTicketMessages(ticket.id)}
+                    className={`p-4 cursor-pointer hover:bg-gray-50 transition-colors ${selectedTicket?.id === ticket.id ? 'bg-primary-50' : ''}`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">#{ticket.id}</span>
+                          {ticket.escalated ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+                              🚨 Eskaliert
+                            </span>
+                          ) : (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                              🤖 KI
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-600 mt-1">{ticket.user_name}</p>
+                        <p className="text-xs text-gray-400">{ticket.user_email}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-gray-400">
+                          {new Date(ticket.created_at).toLocaleString('de-DE')}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">{ticket.message_count} Nachrichten</p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Chat View */}
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden flex flex-col">
+            {selectedTicket ? (
+              <>
+                {/* Ticket Header */}
+                <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">Ticket #{selectedTicket.id}</span>
+                      {selectedTicket.escalated && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">Eskaliert</span>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-500">{selectedTicket.user_name} • {selectedTicket.user_email}</p>
+                  </div>
+                  <button
+                    onClick={() => closeTicket(selectedTicket.id)}
+                    className="px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 flex items-center gap-2"
+                  >
+                    <CheckCircle size={16} /> Schließen
+                  </button>
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px] max-h-[400px] bg-gray-50">
+                  {ticketMessages.map((msg, i) => (
+                    <div
+                      key={msg.id || i}
+                      className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div className={`flex items-end gap-2 max-w-[80%] ${msg.sender_type === 'user' ? 'flex-row-reverse' : ''}`}>
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
+                          msg.sender_type === 'user' 
+                            ? 'bg-gray-600 text-white' 
+                            : msg.sender_type === 'admin'
+                            ? 'bg-blue-500 text-white'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}>
+                          {msg.sender_type === 'user' ? <User size={14} /> : msg.sender_type === 'admin' ? <Headphones size={14} /> : <Bot size={14} />}
+                        </div>
+                        <div className={`px-3 py-2 rounded-2xl text-sm ${
+                          msg.sender_type === 'user'
+                            ? 'bg-gray-600 text-white rounded-br-sm'
+                            : msg.sender_type === 'admin'
+                            ? 'bg-blue-500 text-white rounded-bl-sm'
+                            : 'bg-white border border-gray-200 rounded-bl-sm'
+                        }`}>
+                          {msg.message}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Reply Input */}
+                <div className="p-4 border-t border-gray-100">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={supportReply}
+                      onChange={(e) => setSupportReply(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && sendReply()}
+                      placeholder="Antwort schreiben..."
+                      className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <button
+                      onClick={sendReply}
+                      disabled={!supportReply.trim()}
+                      className="px-4 bg-primary-500 text-white rounded-xl hover:bg-primary-600 disabled:opacity-50"
+                    >
+                      <Send size={18} />
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-gray-400 p-8">
+                <div className="text-center">
+                  <MessageCircle size={48} className="mx-auto mb-3 opacity-50" />
+                  <p>Wähle ein Ticket aus</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ============ MODALS ============
   const CategoryModal = () => {
     const [form, setForm] = useState(editItem || { name: '', slug: '', icon: '📦', color: '#14B8A6' });
@@ -931,6 +1137,9 @@ export default function Admin() {
               {tab.badge && pendingCount > 0 && !sidebarCollapsed && (
                 <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">{pendingCount}</span>
               )}
+              {tab.supportBadge && escalatedCount > 0 && !sidebarCollapsed && (
+                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full animate-pulse">{escalatedCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -955,6 +1164,7 @@ export default function Admin() {
           {activeTab === 'categories' && <CategoriesTab />}
           {activeTab === 'drivers' && <DriversTab />}
           {activeTab === 'customers' && <CustomersTab />}
+          {activeTab === 'support' && <SupportTab />}
           {activeTab === 'analytics' && <div className="text-center py-12 text-gray-400">📊 Statistiken kommen bald</div>}
           {activeTab === 'settings' && <SettingsTab />}
         </div>

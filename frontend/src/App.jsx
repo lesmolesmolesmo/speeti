@@ -14,6 +14,7 @@ import Profile from './pages/Profile';
 import Login from './pages/Login';
 import Admin from './pages/Admin';
 import Driver from './pages/Driver';
+import Support from './pages/Support';
 
 // Components
 import Navbar from './components/Navbar';
@@ -25,9 +26,9 @@ function App() {
   const { user, token, fetchUser, fetchCategories } = useStore();
   const location = useLocation();
   
-  // Hide nav on admin/driver pages (they have their own layout)
-  const hideNav = ['/admin', '/driver'].some(p => location.pathname.startsWith(p));
-  const isFullscreenPage = ['/admin', '/driver', '/login'].some(p => location.pathname.startsWith(p));
+  // Hide nav on admin/driver/support pages (they have their own layout)
+  const hideNav = ['/admin', '/driver', '/support'].some(p => location.pathname.startsWith(p));
+  const isFullscreenPage = ['/admin', '/driver', '/login', '/support'].some(p => location.pathname.startsWith(p));
 
   useEffect(() => {
     fetchCategories();
@@ -59,6 +60,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/admin/*" element={user?.role === 'admin' ? <Admin /> : <Navigate to="/login?redirect=/admin" />} />
           <Route path="/driver/*" element={user?.role === 'driver' ? <Driver /> : <Navigate to="/login?redirect=/driver" />} />
+          <Route path="/support" element={<Support />} />
         </Routes>
       </main>
       

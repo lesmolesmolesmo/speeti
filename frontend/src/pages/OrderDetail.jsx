@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, MapPin, Clock, Package, Truck, CheckCircle, MessageCircle, Send } from 'lucide-react';
+import { ArrowLeft, MapPin, Clock, Package, Truck, CheckCircle, MessageCircle, Send, Phone, Headphones, User } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { useStore, api } from '../store';
 
@@ -16,6 +16,8 @@ export default function OrderDetail() {
   const { currentOrder, fetchOrder, user } = useStore();
   const [message, setMessage] = useState('');
   const [socket, setSocket] = useState(null);
+  const [showChat, setShowChat] = useState(false);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     fetchOrder(id);
@@ -39,6 +41,12 @@ export default function OrderDetail() {
     return () => s.disconnect();
   }, [id]);
 
+  useEffect(() => {
+    if (showChat && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [currentOrder?.messages, showChat]);
+
   const sendMessage = async () => {
     if (!message.trim()) return;
     await api.post(`/orders/${id}/messages`, { message });
@@ -48,12 +56,14 @@ export default function OrderDetail() {
   if (!currentOrder) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   const currentStepIndex = statusSteps.findIndex(s => s.key === currentOrder.status);
+  const hasDriver = currentOrder.driver_id && currentOrder.status !== 'delivered';
+  const isActive = ['confirmed', 'picking', 'delivering'].includes(currentOrder.status);
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
@@ -63,7 +73,7 @@ export default function OrderDetail() {
           <Link to="/orders" className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
             <ArrowLeft size={24} />
           </Link>
-          <div>
+          <div className="flex-1">
             <h1 className="text-xl font-bold text-gray-900">Bestellung #{currentOrder.id}</h1>
             <p className="text-sm text-gray-500">
               {new Date(currentOrder.created_at).toLocaleDateString('de-DE', { 
@@ -84,22 +94,22 @@ export default function OrderDetail() {
               {/* Progress Line */}
               <div className="absolute top-4 left-0 right-0 h-1 bg-gray-200">
                 <div 
-                  className="h-full bg-primary-500 transition-all duration-500"
+                  className="h-full bg-rose-500 transition-all duration-500"
                   style={{ width: `${Math.max(0, (currentStepIndex / (statusSteps.length - 1)) * 100)}%` }}
                 />
               </div>
               
               {statusSteps.map((step, i) => {
-                const isActive = i <= currentStepIndex;
+                const isStepActive = i <= currentStepIndex;
                 const Icon = step.icon;
                 return (
                   <div key={step.key} className="flex flex-col items-center relative z-10">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                      isActive ? 'bg-primary-500 text-white' : 'bg-gray-200 text-gray-400'
+                      isStepActive ? 'bg-rose-500 text-white' : 'bg-gray-200 text-gray-400'
                     }`}>
                       <Icon size={16} />
                     </div>
-                    <span className={`text-xs mt-2 ${isActive ? 'text-primary-600 font-medium' : 'text-gray-400'}`}>
+                    <span className={`text-xs mt-2 ${isStepActive ? 'text-rose-600 font-medium' : 'text-gray-400'}`}>
                       {step.label}
                     </span>
                   </div>
@@ -116,15 +126,73 @@ export default function OrderDetail() {
           </section>
         )}
 
+        {/* Driver Info & Contact */}
+        {hasDriver && (
+          <section className="bg-white rounded-2xl p-4">
+            <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+              <Truck size={18} className="text-rose-500" /> Dein Fahrer
+            </h2>
+            
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 bg-rose-100 rounded-full flex items-center justify-center">
+                <User size={24} className="text-rose-500" />
+              </div>
+              <div className="flex-1">
+                <p className="font-medium text-gray-900">{currentOrder.driver_name || 'Fahrer'}</p>
+                <p className="text-sm text-gray-500">Unterwegs zu dir</p>
+              </div>
+            </div>
+            
+            {/* Contact Buttons */}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              {currentOrder.driver_phone && (
+                <a
+                  href={`tel:${currentOrder.driver_phone}`}
+                  className="flex items-center justify-center gap-2 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-colors"
+                >
+                  <Phone size={18} />
+                  Anrufen
+                </a>
+              )}
+              <button
+                onClick={() => setShowChat(true)}
+                className="flex items-center justify-center gap-2 py-3 bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 transition-colors"
+              >
+                <MessageCircle size={18} />
+                Chat
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* Support Contact - Always visible */}
+        <section className="bg-white rounded-2xl p-4">
+          <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <Headphones size={18} className="text-rose-500" /> Hilfe & Support
+          </h2>
+          
+          <p className="text-sm text-gray-600 mb-4">
+            Problem mit der Bestellung? Unser KI-Assistent hilft dir sofort - oder leitet dich an einen Mitarbeiter weiter.
+          </p>
+          
+          <Link
+            to={`/support?order=${currentOrder.id}`}
+            className="flex items-center justify-center gap-2 py-3 bg-gray-900 text-white rounded-xl font-medium hover:bg-gray-800 transition-colors"
+          >
+            <Headphones size={18} />
+            Support kontaktieren
+          </Link>
+        </section>
+
         {/* Delivery Address */}
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <MapPin size={18} className="text-primary-500" /> Lieferadresse
+            <MapPin size={18} className="text-rose-500" /> Lieferadresse
           </h2>
           <p className="text-gray-600">{currentOrder.street} {currentOrder.house_number}</p>
           <p className="text-gray-600">{currentOrder.postal_code} {currentOrder.city}</p>
           {currentOrder.instructions && (
-            <p className="text-sm text-gray-500 mt-2">{currentOrder.instructions}</p>
+            <p className="text-sm text-gray-500 mt-2 italic">"{currentOrder.instructions}"</p>
           )}
         </section>
 
@@ -164,51 +232,92 @@ export default function OrderDetail() {
             </div>
           </div>
         </section>
-
-        {/* Chat with Driver */}
-        {currentOrder.driver_id && currentOrder.status !== 'delivered' && (
-          <section className="bg-white rounded-2xl p-4">
-            <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-              <MessageCircle size={18} className="text-primary-500" /> Chat mit Fahrer
-            </h2>
-
-            <div className="max-h-48 overflow-y-auto space-y-2 mb-4">
-              {currentOrder.messages?.map(msg => (
-                <div 
-                  key={msg.id}
-                  className={`max-w-[80%] p-3 rounded-2xl text-sm ${
-                    msg.sender_id === user?.id 
-                      ? 'ml-auto bg-primary-500 text-white rounded-br-md' 
-                      : 'bg-gray-100 text-gray-900 rounded-bl-md'
-                  }`}
-                >
-                  {msg.message}
-                </div>
-              ))}
-              {(!currentOrder.messages || currentOrder.messages.length === 0) && (
-                <p className="text-gray-400 text-sm text-center py-4">Noch keine Nachrichten</p>
-              )}
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder="Nachricht schreiben..."
-                className="flex-1 px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-              />
-              <button
-                onClick={sendMessage}
-                className="w-10 h-10 bg-primary-500 text-white rounded-xl flex items-center justify-center hover:bg-primary-600 transition-colors"
-              >
-                <Send size={18} />
-              </button>
-            </div>
-          </section>
-        )}
       </div>
+
+      {/* Chat Modal */}
+      {showChat && hasDriver && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-end lg:items-center lg:justify-center">
+          <div className="bg-white w-full max-w-lg rounded-t-2xl lg:rounded-2xl max-h-[80vh] flex flex-col">
+            {/* Chat Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-rose-100 rounded-full flex items-center justify-center">
+                  <User size={20} className="text-rose-500" />
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">{currentOrder.driver_name || 'Fahrer'}</p>
+                  <p className="text-xs text-green-500">Online</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {currentOrder.driver_phone && (
+                  <a
+                    href={`tel:${currentOrder.driver_phone}`}
+                    className="w-10 h-10 bg-green-500 text-white rounded-full flex items-center justify-center hover:bg-green-600 transition-colors"
+                  >
+                    <Phone size={18} />
+                  </a>
+                )}
+                <button
+                  onClick={() => setShowChat(false)}
+                  className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center hover:bg-gray-200 transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px]">
+              {currentOrder.messages?.length > 0 ? (
+                currentOrder.messages.map(msg => (
+                  <div 
+                    key={msg.id}
+                    className={`max-w-[80%] p-3 rounded-2xl text-sm ${
+                      msg.sender_id === user?.id 
+                        ? 'ml-auto bg-rose-500 text-white rounded-br-md' 
+                        : 'bg-gray-100 text-gray-900 rounded-bl-md'
+                    }`}
+                  >
+                    {msg.sender_id !== user?.id && (
+                      <p className="text-xs text-gray-500 mb-1">{msg.sender_name}</p>
+                    )}
+                    {msg.message}
+                  </div>
+                ))
+              ) : (
+                <div className="text-center text-gray-400 py-8">
+                  <MessageCircle size={32} className="mx-auto mb-2 opacity-50" />
+                  <p>Noch keine Nachrichten</p>
+                  <p className="text-xs mt-1">Schreib deinem Fahrer eine Nachricht</p>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="p-4 border-t border-gray-100">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                  placeholder="Nachricht an Fahrer..."
+                  className="flex-1 px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!message.trim()}
+                  className="w-12 h-12 bg-rose-500 text-white rounded-xl flex items-center justify-center hover:bg-rose-600 transition-colors disabled:opacity-50"
+                >
+                  <Send size={20} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
