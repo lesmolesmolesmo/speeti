@@ -1,8 +1,53 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight } from 'lucide-react';
+import { ArrowLeft, MapPin, Plus, CreditCard, Banknote, Clock, ChevronRight, Calendar, Zap } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useStore } from '../store';
+
+// Generate time slots
+const generateTimeSlots = () => {
+  const slots = [];
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMin = now.getMinutes();
+  
+  // Today's slots (from now + 30min, rounded to 30min intervals)
+  let startHour = currentHour;
+  let startMin = currentMin < 30 ? 30 : 0;
+  if (currentMin >= 30) startHour++;
+  
+  // If too late today, skip
+  if (startHour < 22) {
+    for (let h = startHour; h < 22; h++) {
+      for (let m = (h === startHour ? startMin : 0); m < 60; m += 30) {
+        const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        const endTime = m === 30 ? `${h + 1}:00` : `${h}:30`;
+        slots.push({
+          id: `today-${time}`,
+          label: `Heute ${time} - ${endTime.padStart(5, '0')}`,
+          date: 'today',
+          time
+        });
+      }
+    }
+  }
+  
+  // Tomorrow's slots
+  for (let h = 8; h < 22; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+      const endTime = m === 30 ? `${h + 1}:00` : `${h}:30`;
+      slots.push({
+        id: `tomorrow-${time}`,
+        label: `Morgen ${time} - ${endTime.padStart(5, '0')}`,
+        date: 'tomorrow',
+        time
+      });
+    }
+  }
+  
+  return slots;
+};
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -12,6 +57,10 @@ export default function Checkout() {
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [newAddress, setNewAddress] = useState({ street: '', house_number: '', postal_code: '', instructions: '' });
   const [loading, setLoading] = useState(false);
+  const [deliveryType, setDeliveryType] = useState('asap'); // 'asap' or 'scheduled'
+  const [selectedSlot, setSelectedSlot] = useState(null);
+  const [showTimeSlots, setShowTimeSlots] = useState(false);
+  const timeSlots = generateTimeSlots();
 
   const subtotal = getCartTotal();
   const deliveryFee = subtotal >= 20 ? 0 : 2.99;
@@ -55,16 +104,89 @@ export default function Checkout() {
       <div className="max-w-lg mx-auto px-4 py-6 space-y-6">
         {/* Delivery Time */}
         <section className="bg-white rounded-2xl p-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center">
-              <Clock className="text-primary-600" size={24} />
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Geschätzte Lieferzeit</p>
-              <p className="font-bold text-gray-900">15-20 Minuten</p>
-            </div>
+          <h2 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Clock size={20} className="text-primary-500" /> Lieferzeit
+          </h2>
+          
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <button
+              onClick={() => { setDeliveryType('asap'); setSelectedSlot(null); }}
+              className={`p-4 rounded-xl border-2 transition-all ${
+                deliveryType === 'asap' 
+                  ? 'border-primary-500 bg-primary-50' 
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <Zap className={`mx-auto mb-2 ${deliveryType === 'asap' ? 'text-primary-500' : 'text-gray-400'}`} size={24} />
+              <p className="font-semibold text-sm">Schnellstmöglich</p>
+              <p className="text-xs text-gray-500">15-20 Minuten</p>
+            </button>
+            
+            <button
+              onClick={() => setShowTimeSlots(true)}
+              className={`p-4 rounded-xl border-2 transition-all ${
+                deliveryType === 'scheduled' 
+                  ? 'border-primary-500 bg-primary-50' 
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <Calendar className={`mx-auto mb-2 ${deliveryType === 'scheduled' ? 'text-primary-500' : 'text-gray-400'}`} size={24} />
+              <p className="font-semibold text-sm">Vorbestellen</p>
+              <p className="text-xs text-gray-500">
+                {selectedSlot ? selectedSlot.label : 'Zeit wählen'}
+              </p>
+            </button>
           </div>
+
+          {deliveryType === 'asap' && (
+            <div className="flex items-center gap-3 p-3 bg-primary-50 rounded-xl">
+              <Zap className="text-primary-500" size={20} />
+              <p className="text-sm text-primary-700">Lieferung in <strong>15-20 Minuten</strong></p>
+            </div>
+          )}
         </section>
+
+        {/* Time Slot Modal */}
+        {showTimeSlots && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-end">
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              className="bg-white w-full rounded-t-3xl max-h-[70vh] overflow-hidden"
+            >
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                <h3 className="font-bold text-lg">Lieferzeit wählen</h3>
+                <button 
+                  onClick={() => setShowTimeSlots(false)}
+                  className="p-2 hover:bg-gray-100 rounded-full"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="p-4 overflow-y-auto max-h-[50vh]">
+                <div className="space-y-2">
+                  {timeSlots.slice(0, 20).map(slot => (
+                    <button
+                      key={slot.id}
+                      onClick={() => {
+                        setSelectedSlot(slot);
+                        setDeliveryType('scheduled');
+                        setShowTimeSlots(false);
+                      }}
+                      className={`w-full p-4 rounded-xl border-2 text-left transition-colors ${
+                        selectedSlot?.id === slot.id 
+                          ? 'border-primary-500 bg-primary-50' 
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <p className="font-medium">{slot.label}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
 
         {/* Delivery Address */}
         <section className="bg-white rounded-2xl p-4">
