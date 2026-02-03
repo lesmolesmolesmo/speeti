@@ -1,107 +1,102 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo, memo } from 'react';
 import { Link } from 'react-router-dom';
 import { MapPin, Clock, ChevronRight, Zap, Search, Truck, Shield, Star, ChevronLeft } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { useStore, api } from '../store';
 import ProductCard from '../components/ProductCard';
+
+// ProductRow als separate Komponente AUSSERHALB von Home (verhindert Re-Renders)
+const ProductRow = memo(({ title, products, link, showAll = true }) => {
+  const scrollRef = useRef(null);
+
+  const scroll = (direction) => {
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollBy({ left: direction * 300, behavior: 'smooth' });
+  };
+
+  if (!products || products.length === 0) return null;
+
+  return (
+    <section className="py-6">
+      <div className="flex items-center justify-between mb-4 px-4 lg:px-0">
+        <h2 className="text-lg lg:text-xl font-bold text-gray-900">{title}</h2>
+        {showAll && link && (
+          <Link 
+            to={link} 
+            className="text-[#00C853] font-semibold text-sm flex items-center gap-1 hover:underline"
+          >
+            Alle anzeigen <ChevronRight size={16} />
+          </Link>
+        )}
+      </div>
+
+      <div className="relative group">
+        {/* Desktop Scroll Buttons */}
+        <button
+          onClick={() => scroll(-1)}
+          className="hidden lg:flex absolute left-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white shadow-lg rounded-full items-center justify-center text-gray-600 hover:text-gray-900 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <ChevronLeft size={24} />
+        </button>
+        <button
+          onClick={() => scroll(1)}
+          className="hidden lg:flex absolute right-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white shadow-lg rounded-full items-center justify-center text-gray-600 hover:text-gray-900 translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <ChevronRight size={24} />
+        </button>
+
+        {/* Products Scroll */}
+        <div 
+          ref={scrollRef}
+          className="flex gap-3 lg:gap-4 overflow-x-auto scrollbar-hide px-4 lg:px-0 pb-2"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {products.map((product) => (
+            <div key={product.id} className="flex-shrink-0">
+              <ProductCard product={product} compact />
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+});
+
+ProductRow.displayName = 'ProductRow';
 
 export default function Home() {
   const { categories, fetchCategories } = useStore();
   const [allProducts, setAllProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
+  // Nur einmal laden
   useEffect(() => {
-    fetchCategories();
-    api.get('/products').then(res => {
-      setAllProducts(res.data);
+    if (dataLoaded) return;
+    
+    Promise.all([
+      fetchCategories(),
+      api.get('/products')
+    ]).then(([_, productsRes]) => {
+      setAllProducts(productsRes.data);
+      setLoading(false);
+      setDataLoaded(true);
+    }).catch(() => {
       setLoading(false);
     });
-  }, []);
+  }, [dataLoaded]);
 
-  const productsByCategory = categories.map(cat => ({
-    ...cat,
-    products: allProducts.filter(p => p.category_id === cat.id).slice(0, 12)
-  })).filter(cat => cat.products.length > 0);
+  // Memoize um Re-Renders zu vermeiden
+  const productsByCategory = useMemo(() => {
+    return categories.map(cat => ({
+      ...cat,
+      products: allProducts.filter(p => p.category_id === cat.id).slice(0, 12)
+    })).filter(cat => cat.products.length > 0);
+  }, [categories, allProducts]);
 
-  const featuredProducts = allProducts.filter(p => p.featured).slice(0, 12);
-
-  // Horizontal scroll with buttons
-  const ProductRow = ({ title, products, link, showAll = true }) => {
-    const scrollRef = useRef(null);
-    const [canScrollLeft, setCanScrollLeft] = useState(false);
-    const [canScrollRight, setCanScrollRight] = useState(true);
-
-    const checkScroll = () => {
-      if (!scrollRef.current) return;
-      const { scrollLeft, scrollWidth, clientWidth } = scrollRef.current;
-      setCanScrollLeft(scrollLeft > 0);
-      setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 10);
-    };
-
-    const scroll = (direction) => {
-      if (!scrollRef.current) return;
-      const scrollAmount = 300;
-      scrollRef.current.scrollBy({ left: direction * scrollAmount, behavior: 'smooth' });
-    };
-
-    useEffect(() => {
-      const el = scrollRef.current;
-      if (el) {
-        el.addEventListener('scroll', checkScroll);
-        checkScroll();
-        return () => el.removeEventListener('scroll', checkScroll);
-      }
-    }, [products]);
-
-    return (
-      <section className="py-6">
-        <div className="flex items-center justify-between mb-4 px-4 lg:px-0">
-          <h2 className="text-lg lg:text-xl font-bold text-gray-900">{title}</h2>
-          {showAll && link && (
-            <Link 
-              to={link} 
-              className="text-[#00C853] font-semibold text-sm flex items-center gap-1 hover:underline"
-            >
-              Alle anzeigen <ChevronRight size={16} />
-            </Link>
-          )}
-        </div>
-
-        <div className="relative group">
-          {/* Scroll Buttons - Desktop */}
-          {canScrollLeft && (
-            <button
-              onClick={() => scroll(-1)}
-              className="hidden lg:flex absolute left-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white shadow-lg rounded-full items-center justify-center text-gray-600 hover:text-gray-900 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-            >
-              <ChevronLeft size={24} />
-            </button>
-          )}
-          {canScrollRight && (
-            <button
-              onClick={() => scroll(1)}
-              className="hidden lg:flex absolute right-0 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white shadow-lg rounded-full items-center justify-center text-gray-600 hover:text-gray-900 translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-            >
-              <ChevronRight size={24} />
-            </button>
-          )}
-
-          {/* Products Scroll */}
-          <div 
-            ref={scrollRef}
-            className="flex gap-3 lg:gap-4 overflow-x-auto scrollbar-hide px-4 lg:px-0 pb-2 snap-x snap-mandatory"
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
-            {products.map((product, i) => (
-              <div key={product.id} className="snap-start">
-                <ProductCard product={product} compact />
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-    );
-  };
+  const featuredProducts = useMemo(() => {
+    return allProducts.filter(p => p.featured).slice(0, 12);
+  }, [allProducts]);
 
   if (loading) {
     return (
@@ -117,12 +112,9 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#FAFAFA]">
       {/* Header */}
-      <header className="bg-[#00C853] relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#00C853] via-[#00B84D] to-[#00A040]" />
-        
+      <header className="bg-[#00C853]">
         {/* Mobile Header */}
-        <div className="lg:hidden relative px-4 pt-12 pb-6">
-          {/* Top Bar */}
+        <div className="lg:hidden px-4 pt-12 pb-6">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 bg-white rounded-2xl flex items-center justify-center shadow-lg">
@@ -145,7 +137,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Search */}
           <Link 
             to="/search" 
             className="flex items-center gap-3 bg-white rounded-2xl px-4 py-3.5 shadow-lg"
@@ -156,37 +147,32 @@ export default function Home() {
         </div>
 
         {/* Desktop Header */}
-        <div className="hidden lg:block relative py-16 px-8">
+        <div className="hidden lg:block py-16 px-8">
           <div className="max-w-6xl mx-auto">
             <div className="flex items-center justify-between">
               <div className="max-w-xl">
-                <motion.h1 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-5xl font-extrabold text-white leading-tight mb-4"
-                >
+                <h1 className="text-5xl font-extrabold text-white leading-tight mb-4">
                   Lebensmittel in<br />
                   <span className="text-white/90">15 Minuten geliefert</span>
-                </motion.h1>
+                </h1>
                 <p className="text-white/80 text-lg mb-8">
-                  Frische Produkte direkt zu dir nach Hause - schneller als du "Hunger" sagen kannst.
+                  Frische Produkte direkt zu dir nach Hause.
                 </p>
                 
                 <Link 
                   to="/search"
-                  className="inline-flex items-center gap-4 bg-white rounded-2xl pl-5 pr-3 py-4 shadow-xl hover:shadow-2xl transition-all w-full max-w-md group"
+                  className="inline-flex items-center gap-4 bg-white rounded-2xl pl-5 pr-3 py-4 shadow-xl hover:shadow-2xl transition-shadow w-full max-w-md"
                 >
                   <Search size={22} className="text-gray-400" />
                   <span className="text-gray-400 flex-1">Was möchtest du bestellen?</span>
-                  <span className="bg-[#00C853] text-white px-5 py-2.5 rounded-xl font-semibold group-hover:bg-[#00B84D] transition-colors">
+                  <span className="bg-[#00C853] text-white px-5 py-2.5 rounded-xl font-semibold">
                     Suchen
                   </span>
                 </Link>
               </div>
 
-              {/* Stats */}
               <div className="flex flex-col gap-4">
-                <div className="bg-white/15 backdrop-blur-sm rounded-2xl p-5 flex items-center gap-4 min-w-[200px]">
+                <div className="bg-white/15 backdrop-blur-sm rounded-2xl p-5 flex items-center gap-4">
                   <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
                     <Clock className="text-white" size={24} />
                   </div>
@@ -211,15 +197,18 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Categories - Horizontal Scroll */}
+      {/* Categories */}
       <div className="bg-white border-b border-gray-100 sticky top-0 z-40 shadow-sm">
         <div className="max-w-6xl mx-auto">
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide px-4 lg:px-0 py-3" style={{ scrollbarWidth: 'none' }}>
+          <div 
+            className="flex gap-2 overflow-x-auto px-4 lg:px-0 py-3"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
             {categories.map((cat) => (
               <Link
                 key={cat.id}
                 to={`/category/${cat.slug}`}
-                className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 bg-gray-50 hover:bg-[#00C853]/10 border border-gray-100 hover:border-[#00C853]/30 rounded-full text-sm font-medium text-gray-700 hover:text-[#00C853] transition-all"
+                className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 bg-gray-50 hover:bg-[#00C853]/10 border border-gray-100 hover:border-[#00C853]/30 rounded-full text-sm font-medium text-gray-700 hover:text-[#00C853] transition-colors"
               >
                 <span className="text-lg">{cat.icon}</span>
                 <span className="whitespace-nowrap">{cat.name}</span>
@@ -230,44 +219,30 @@ export default function Home() {
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto lg:px-0">
+      <div className="max-w-6xl mx-auto">
         
         {/* Promo Banners - Desktop */}
-        <div className="hidden lg:grid grid-cols-3 gap-4 py-6">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-gradient-to-r from-[#00C853] to-[#00E676] rounded-2xl p-6 text-white cursor-pointer hover:shadow-lg transition-shadow"
-          >
+        <div className="hidden lg:grid grid-cols-3 gap-4 py-6 px-0">
+          <div className="bg-gradient-to-r from-[#00C853] to-[#00E676] rounded-2xl p-6 text-white">
             <Truck size={32} className="mb-3" />
             <h3 className="font-bold text-lg">Gratis Lieferung</h3>
             <p className="text-white/80 text-sm">Ab 20€ Bestellwert</p>
-          </motion.div>
+          </div>
           
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="bg-gradient-to-r from-orange-500 to-red-500 rounded-2xl p-6 text-white cursor-pointer hover:shadow-lg transition-shadow"
-          >
+          <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-2xl p-6 text-white">
             <Zap size={32} className="mb-3" />
             <h3 className="font-bold text-lg">Blitzlieferung</h3>
             <p className="text-white/80 text-sm">In nur 15-20 Minuten</p>
-          </motion.div>
+          </div>
           
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="bg-gradient-to-r from-violet-500 to-purple-600 rounded-2xl p-6 text-white cursor-pointer hover:shadow-lg transition-shadow"
-          >
+          <div className="bg-gradient-to-r from-violet-500 to-purple-600 rounded-2xl p-6 text-white">
             <Shield size={32} className="mb-3" />
             <h3 className="font-bold text-lg">Frischegarantie</h3>
             <p className="text-white/80 text-sm">100% Qualität oder Geld zurück</p>
-          </motion.div>
+          </div>
         </div>
 
-        {/* Mobile Promo Banner */}
+        {/* Mobile Promo */}
         <div className="lg:hidden px-4 py-4">
           <div className="bg-gradient-to-r from-[#00C853] to-[#00E676] rounded-2xl p-4 flex items-center justify-between">
             <div className="text-white">
@@ -275,7 +250,7 @@ export default function Home() {
               <p className="text-white/80 text-sm">Ab 20€ Bestellwert</p>
             </div>
             <Link to="/search" className="bg-white text-[#00C853] font-bold px-4 py-2 rounded-xl text-sm">
-              Jetzt bestellen
+              Bestellen
             </Link>
           </div>
         </div>
@@ -300,34 +275,42 @@ export default function Home() {
         ))}
 
         {/* Trust Section */}
-        <div className="bg-gray-900 lg:rounded-2xl lg:my-6 py-10">
-          <div className="px-4 lg:px-8 max-w-4xl mx-auto">
+        <div className="bg-gray-900 lg:rounded-2xl lg:mx-0 lg:my-6 py-10">
+          <div className="px-4 max-w-4xl mx-auto">
             <h3 className="text-white font-bold text-xl text-center mb-8">
               Warum <span className="text-[#00C853]">10.000+</span> Kunden Speeti vertrauen
             </h3>
             <div className="grid grid-cols-3 gap-6">
-              {[
-                { icon: Truck, title: '15-20 Min', desc: 'Blitzschnelle Lieferung' },
-                { icon: Shield, title: 'Frischegarantie', desc: 'Oder Geld zurück' },
-                { icon: Star, title: '4.9 Sterne', desc: '1.000+ Bewertungen' },
-              ].map((item, i) => (
-                <div key={i} className="text-center">
-                  <div className="w-14 h-14 bg-[#00C853]/20 rounded-2xl flex items-center justify-center mx-auto mb-3">
-                    <item.icon className="text-[#00C853]" size={26} />
-                  </div>
-                  <p className="text-white font-semibold">{item.title}</p>
-                  <p className="text-gray-400 text-xs mt-1">{item.desc}</p>
+              <div className="text-center">
+                <div className="w-14 h-14 bg-[#00C853]/20 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                  <Truck className="text-[#00C853]" size={26} />
                 </div>
-              ))}
+                <p className="text-white font-semibold">15-20 Min</p>
+                <p className="text-gray-400 text-xs mt-1">Blitzschnell</p>
+              </div>
+              <div className="text-center">
+                <div className="w-14 h-14 bg-[#00C853]/20 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                  <Shield className="text-[#00C853]" size={26} />
+                </div>
+                <p className="text-white font-semibold">Frischegarantie</p>
+                <p className="text-gray-400 text-xs mt-1">Geld zurück</p>
+              </div>
+              <div className="text-center">
+                <div className="w-14 h-14 bg-[#00C853]/20 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                  <Star className="text-[#00C853]" size={26} />
+                </div>
+                <p className="text-white font-semibold">4.9 Sterne</p>
+                <p className="text-gray-400 text-xs mt-1">1.000+ Bewertungen</p>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="py-8 px-4 lg:px-0">
+        <div className="py-8 px-4">
           <div className="text-center text-sm text-gray-400">
-            <p>🕐 Täglich 08:00 - 22:00 Uhr • 📍 Liefergebiet: Ganz Münster</p>
-            <p className="mt-2">© 2024 Speeti • Made with ❤️ in Münster</p>
+            <p>🕐 Täglich 08:00 - 22:00 • 📍 Münster</p>
+            <p className="mt-2">© 2024 Speeti</p>
           </div>
         </div>
       </div>
