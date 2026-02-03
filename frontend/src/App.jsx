@@ -30,7 +30,11 @@ function App() {
 
   useEffect(() => {
     fetchCategories();
-    if (token) fetchUser();
+    // Check for token in localStorage on startup
+    const savedToken = localStorage.getItem('speeti-token');
+    if (savedToken || token) {
+      fetchUser();
+    }
   }, []);
 
   return (

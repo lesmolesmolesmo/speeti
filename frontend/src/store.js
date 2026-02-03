@@ -18,6 +18,8 @@ export const useStore = create(
       user: null,
       token: null,
       
+      setToken: (token) => set({ token }),
+      
       login: async (email, password) => {
         const { data } = await api.post('/auth/login', { email, password });
         localStorage.setItem('speeti-token', data.token);

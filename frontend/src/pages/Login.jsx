@@ -35,7 +35,7 @@ export default function Login() {
         : { email: form.email, password: form.password };
       
       const res = await api.post(endpoint, payload);
-      localStorage.setItem('token', res.data.token);
+      localStorage.setItem('speeti-token', res.data.token);
       setToken(res.data.token);
       await fetchUser();
       navigate(redirect);
