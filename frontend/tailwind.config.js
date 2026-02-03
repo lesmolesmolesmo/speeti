@@ -4,7 +4,21 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Flink-style green
         primary: {
+          50: '#E8F5E9',
+          100: '#C8E6C9',
+          200: '#A5D6A7',
+          300: '#81C784',
+          400: '#66BB6A',
+          500: '#00C853',  // Main Flink green
+          600: '#00B84D',
+          700: '#00A040',
+          800: '#008830',
+          900: '#006620'
+        },
+        // Keep teal as secondary
+        teal: {
           50: '#F0FDFA',
           100: '#CCFBF1',
           200: '#99F6E4',

@@ -13,12 +13,22 @@ body {
 }
 
 /* Hide scrollbar but allow scrolling */
-.hide-scrollbar {
+.hide-scrollbar,
+.scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
-.hide-scrollbar::-webkit-scrollbar {
+.hide-scrollbar::-webkit-scrollbar,
+.scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Snap scroll */
+.snap-x {
+  scroll-snap-type: x mandatory;
+}
+.snap-start {
+  scroll-snap-align: start;
 }
 
 /* Smooth scroll */
