@@ -19,6 +19,7 @@ import Driver from './pages/Driver';
 import Navbar from './components/Navbar';
 import CartButton from './components/CartButton';
 import DesktopSidebar from './components/DesktopSidebar';
+import { ToastContainer } from './components/Toast';
 
 function App() {
   const { user, token, fetchUser, fetchCategories } = useStore();
@@ -70,6 +71,9 @@ function App() {
           </div>
         </>
       )}
+      
+      {/* Toast Notifications */}
+      <ToastContainer />
     </div>
   );
 }

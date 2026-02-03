@@ -1,6 +1,7 @@
 import { Plus, Minus, Check } from 'lucide-react';
 import { useState, memo } from 'react';
 import { useStore } from '../store';
+import { showToast } from './Toast';
 
 const ProductCard = memo(function ProductCard({ product, compact = false }) {
   const { cart, addToCart, removeFromCart } = useStore();
@@ -12,6 +13,9 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
     e.preventDefault();
     e.stopPropagation();
     addToCart(product);
+    if (quantity === 0) {
+      showToast('In den Warenkorb gelegt', 'cart');
+    }
   };
 
   const handleRemove = (e) => {

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { MapPin, Clock, ChevronRight, Search, Truck, ChevronLeft, Menu } from 'lucide-react';
 import { useStore, api } from '../store';
 import ProductCard from '../components/ProductCard';
+import AddressModal from '../components/AddressModal';
 
 // ProductRow als separate Komponente
 const ProductRow = memo(({ title, products, link }) => {
@@ -59,10 +60,11 @@ const ProductRow = memo(({ title, products, link }) => {
 ProductRow.displayName = 'ProductRow';
 
 export default function Home() {
-  const { categories, fetchCategories } = useStore();
+  const { categories, fetchCategories, selectedAddress } = useStore();
   const [allProducts, setAllProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [showAddressModal, setShowAddressModal] = useState(false);
 
   useEffect(() => {
     if (dataLoaded) return;
@@ -117,9 +119,17 @@ export default function Home() {
           
           {/* Address Bar */}
           <div className="px-4 pb-3">
-            <button className="w-full flex items-center gap-2 px-4 py-3 bg-rose-50 border border-rose-100 rounded-full text-left">
+            <button 
+              onClick={() => setShowAddressModal(true)}
+              className="w-full flex items-center gap-2 px-4 py-3 bg-rose-50 border border-rose-100 rounded-full text-left hover:bg-rose-100 transition-colors"
+            >
               <MapPin size={18} className="text-rose-500 flex-shrink-0" />
-              <span className="text-sm text-gray-700 flex-1">Gib deine Lieferadresse ein</span>
+              <span className="text-sm text-gray-700 flex-1">
+                {selectedAddress 
+                  ? `${selectedAddress.street} ${selectedAddress.house_number}`
+                  : 'Gib deine Lieferadresse ein'
+                }
+              </span>
               <ChevronRight size={18} className="text-gray-400" />
             </button>
           </div>
@@ -130,9 +140,17 @@ export default function Home() {
           <div className="max-w-6xl mx-auto flex items-center justify-between">
             <div className="flex items-center gap-8">
               <span className="text-3xl font-extrabold text-rose-500">Speeti</span>
-              <button className="flex items-center gap-2 px-5 py-2.5 bg-rose-50 border border-rose-100 rounded-full hover:bg-rose-100 transition-colors">
+              <button 
+                onClick={() => setShowAddressModal(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-rose-50 border border-rose-100 rounded-full hover:bg-rose-100 transition-colors"
+              >
                 <MapPin size={18} className="text-rose-500" />
-                <span className="text-sm text-gray-700">Gib hier deine Lieferadresse ein</span>
+                <span className="text-sm text-gray-700">
+                  {selectedAddress 
+                    ? `${selectedAddress.street} ${selectedAddress.house_number}, ${selectedAddress.city}`
+                    : 'Gib hier deine Lieferadresse ein'
+                  }
+                </span>
               </button>
             </div>
             
@@ -251,23 +269,31 @@ export default function Home() {
           />
         ))}
 
-        {/* Delivery Info Banner */}
-        <div className="px-4 lg:px-0 py-6">
-          <div className="bg-white border border-gray-200 rounded-2xl p-4 flex items-center gap-4">
-            <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center flex-shrink-0">
-              <MapPin size={24} className="text-rose-500" />
+        {/* Delivery Info Banner - nur wenn keine Adresse */}
+        {!selectedAddress && (
+          <div className="px-4 lg:px-0 py-6">
+            <div className="bg-white border border-gray-200 rounded-2xl p-4 flex items-center gap-4">
+              <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center flex-shrink-0">
+                <MapPin size={24} className="text-rose-500" />
+              </div>
+              <div className="flex-1">
+                <p className="font-medium text-gray-900">Gib deine Adresse ein, um Produkte in deiner Nähe zu sehen.</p>
+              </div>
+              <button 
+                onClick={() => setShowAddressModal(true)}
+                className="bg-rose-500 text-white px-4 py-2 rounded-lg font-semibold text-sm hover:bg-rose-600 transition-colors whitespace-nowrap"
+              >
+                Adresse hinzufügen
+              </button>
             </div>
-            <div className="flex-1">
-              <p className="font-medium text-gray-900">Gib deine Adresse ein, um Produkte in deiner Nähe zu sehen.</p>
-            </div>
-            <Link 
-              to="/profile"
-              className="bg-rose-500 text-white px-4 py-2 rounded-lg font-semibold text-sm hover:bg-rose-600 transition-colors whitespace-nowrap"
-            >
-              Adresse hinzufügen
-            </Link>
           </div>
-        </div>
+        )}
+
+        {/* Address Modal */}
+        <AddressModal 
+          isOpen={showAddressModal} 
+          onClose={() => setShowAddressModal(false)} 
+        />
 
         {/* Footer */}
         <div className="py-8 px-4 text-center border-t border-gray-200 bg-white">
