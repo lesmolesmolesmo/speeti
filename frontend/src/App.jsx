@@ -30,9 +30,9 @@ function App() {
 
   useEffect(() => {
     fetchCategories();
-    // Check for token in localStorage on startup
+    // Bei Seitenstart: Token prüfen und User laden
     const savedToken = localStorage.getItem('speeti-token');
-    if (savedToken || token) {
+    if (savedToken) {
       fetchUser();
     }
   }, []);

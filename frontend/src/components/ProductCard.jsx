@@ -1,4 +1,4 @@
-import { Plus, Minus, Check, Heart } from 'lucide-react';
+import { Plus, Minus, Check } from 'lucide-react';
 import { useState, memo } from 'react';
 import { useStore } from '../store';
 
@@ -20,13 +20,17 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
     removeFromCart(product.id);
   };
 
-  const fallbackImage = `https://via.placeholder.com/400x400/f3f4f6/9ca3af?text=${encodeURIComponent(product.name?.charAt(0) || 'P')}`;
+  const fallbackImage = `https://via.placeholder.com/400x400/FDF2F8/EC4899?text=${encodeURIComponent(product.name?.charAt(0) || 'P')}`;
+  
+  // Rabatt berechnen
+  const hasDiscount = product.original_price && product.original_price > product.price;
+  const discountPercent = hasDiscount ? Math.round((1 - product.price / product.original_price) * 100) : 0;
 
-  // Compact version for mobile
+  // Compact version für Mobile
   if (compact) {
     return (
-      <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow w-[140px] flex-shrink-0 border border-gray-100">
-        <div className="relative aspect-square bg-gray-50 overflow-hidden">
+      <div className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow w-[130px] flex-shrink-0 border border-gray-100">
+        <div className="relative aspect-square bg-gray-50">
           <img
             src={imageError ? fallbackImage : (product.image || fallbackImage)}
             alt={product.name}
@@ -35,58 +39,71 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
             loading="lazy"
           />
           
-          {product.featured && (
-            <span className="absolute top-2 left-2 bg-orange-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-              Beliebt
+          {/* Discount Badge - Flink Style */}
+          {hasDiscount && (
+            <span className="absolute top-2 left-2 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+              -{discountPercent}%
             </span>
           )}
-        </div>
 
-        <div className="p-3">
-          <p className="text-[11px] text-gray-400 mb-0.5">{product.unit || 'Stück'}</p>
-          <h3 className="font-semibold text-sm text-gray-900 line-clamp-2 leading-tight min-h-[2.5rem] mb-2">
-            {product.name}
-          </h3>
-
-          <div className="flex items-end justify-between">
-            <p className="text-base font-bold text-gray-900">
-              {product.price?.toFixed(2).replace('.', ',')} €
-            </p>
-
+          {/* Add Button */}
+          <div className="absolute bottom-2 right-2">
             {quantity === 0 ? (
               <button
                 onClick={handleAdd}
-                className="w-9 h-9 bg-[#00C853] hover:bg-[#00B84D] text-white rounded-full flex items-center justify-center shadow-md transition-colors"
+                className="w-8 h-8 bg-rose-500 hover:bg-rose-600 text-white rounded-full flex items-center justify-center shadow-md transition-colors"
               >
-                <Plus size={20} strokeWidth={2.5} />
+                <Plus size={18} strokeWidth={2.5} />
               </button>
             ) : (
-              <div className="flex items-center gap-0.5 bg-[#00C853] rounded-full p-0.5">
+              <div className="flex items-center gap-0.5 bg-rose-500 rounded-full p-0.5">
                 <button
                   onClick={handleRemove}
-                  className="w-7 h-7 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white transition-colors"
+                  className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center text-white"
                 >
-                  <Minus size={14} strokeWidth={2.5} />
+                  <Minus size={12} strokeWidth={2.5} />
                 </button>
-                <span className="w-5 text-center text-sm font-bold text-white">{quantity}</span>
+                <span className="w-4 text-center text-xs font-bold text-white">{quantity}</span>
                 <button
                   onClick={handleAdd}
-                  className="w-7 h-7 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white transition-colors"
+                  className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center text-white"
                 >
-                  <Plus size={14} strokeWidth={2.5} />
+                  <Plus size={12} strokeWidth={2.5} />
                 </button>
               </div>
             )}
           </div>
         </div>
+
+        <div className="p-2">
+          {/* Preis */}
+          <div className="flex items-baseline gap-1.5 mb-1">
+            <span className="text-sm font-bold text-gray-900">
+              {product.price?.toFixed(2).replace('.', ',')} €
+            </span>
+            {hasDiscount && (
+              <span className="text-xs text-gray-400 line-through">
+                {product.original_price?.toFixed(2).replace('.', ',')} €
+              </span>
+            )}
+          </div>
+          
+          {/* Name */}
+          <h3 className="text-xs text-gray-700 line-clamp-2 leading-tight min-h-[2rem]">
+            {product.name}
+          </h3>
+          
+          {/* Unit */}
+          <p className="text-[10px] text-gray-400 mt-0.5">{product.unit || 'Stück'}</p>
+        </div>
       </div>
     );
   }
 
-  // Full card for desktop
+  // Full Card für Desktop
   return (
-    <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow border border-gray-100 group">
-      <div className="relative aspect-square bg-gray-50 overflow-hidden">
+    <div className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow border border-gray-100 group">
+      <div className="relative aspect-square bg-gray-50">
         <img
           src={imageError ? fallbackImage : (product.image || fallbackImage)}
           alt={product.name}
@@ -95,88 +112,98 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
           loading="lazy"
         />
         
-        {product.featured && (
-          <span className="absolute top-3 left-3 bg-orange-500 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-md">
-            🔥 Beliebt
+        {/* Discount Badge */}
+        {hasDiscount && (
+          <span className="absolute top-3 left-3 bg-rose-500 text-white text-xs font-bold px-2 py-1 rounded shadow-md">
+            -{discountPercent}%
           </span>
         )}
 
-        {/* Desktop hover overlay */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-200">
+        {/* Hover Overlay */}
+        <div className="absolute bottom-0 left-0 right-0 p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-200">
           {quantity === 0 ? (
             <button
               onClick={handleAdd}
-              className="w-full py-3 bg-[#00C853] hover:bg-[#00B84D] text-white rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg transition-colors"
+              className="w-full py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 shadow-lg transition-colors"
             >
-              <Plus size={20} /> Hinzufügen
+              <Plus size={18} /> Hinzufügen
             </button>
           ) : (
-            <div className="flex items-center justify-center gap-3 bg-white rounded-xl p-2 shadow-lg">
+            <div className="flex items-center justify-center gap-3 bg-white rounded-lg p-2 shadow-lg">
               <button
                 onClick={handleRemove}
-                className="w-10 h-10 bg-gray-100 hover:bg-gray-200 rounded-xl flex items-center justify-center transition-colors"
+                className="w-9 h-9 bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center justify-center"
               >
-                <Minus size={20} />
+                <Minus size={18} />
               </button>
-              <span className="w-8 text-center text-xl font-bold">{quantity}</span>
+              <span className="w-6 text-center text-lg font-bold">{quantity}</span>
               <button
                 onClick={handleAdd}
-                className="w-10 h-10 bg-[#00C853] hover:bg-[#00B84D] text-white rounded-xl flex items-center justify-center transition-colors"
+                className="w-9 h-9 bg-rose-500 hover:bg-rose-600 text-white rounded-lg flex items-center justify-center"
               >
-                <Plus size={20} />
+                <Plus size={18} />
               </button>
             </div>
           )}
         </div>
       </div>
 
-      <div className="p-4">
-        <p className="text-xs text-gray-400 mb-1 uppercase tracking-wide">{product.unit || 'Stück'}</p>
-        <h3 className="font-semibold text-gray-900 line-clamp-2 leading-snug min-h-[2.75rem] group-hover:text-[#00C853] transition-colors">
+      <div className="p-3">
+        {/* Preis */}
+        <div className="flex items-baseline gap-2 mb-1">
+          <span className="text-lg font-bold text-gray-900">
+            {product.price?.toFixed(2).replace('.', ',')} €
+          </span>
+          {hasDiscount && (
+            <span className="text-sm text-gray-400 line-through">
+              {product.original_price?.toFixed(2).replace('.', ',')} €
+            </span>
+          )}
+        </div>
+        
+        {/* Name */}
+        <h3 className="font-medium text-gray-900 line-clamp-2 leading-snug min-h-[2.5rem] text-sm group-hover:text-rose-600 transition-colors">
           {product.name}
         </h3>
+        
+        {/* Unit */}
+        <p className="text-xs text-gray-400 mt-1">{product.unit || 'Stück'}</p>
 
-        <div className="flex items-end justify-between mt-3">
-          <p className="text-xl font-bold text-gray-900">
-            {product.price?.toFixed(2).replace('.', ',')} €
-          </p>
-
-          {/* Mobile button */}
-          <div className="lg:hidden">
-            {quantity === 0 ? (
+        {/* Mobile Add Button */}
+        <div className="lg:hidden mt-2 flex items-center justify-between">
+          {quantity === 0 ? (
+            <button
+              onClick={handleAdd}
+              className="w-10 h-10 bg-rose-500 hover:bg-rose-600 text-white rounded-full flex items-center justify-center shadow-md ml-auto"
+            >
+              <Plus size={20} strokeWidth={2.5} />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1 bg-rose-500 rounded-full p-1 ml-auto">
+              <button
+                onClick={handleRemove}
+                className="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-white"
+              >
+                <Minus size={14} />
+              </button>
+              <span className="w-5 text-center font-bold text-white text-sm">{quantity}</span>
               <button
                 onClick={handleAdd}
-                className="w-11 h-11 bg-[#00C853] hover:bg-[#00B84D] text-white rounded-full flex items-center justify-center shadow-md"
+                className="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-white"
               >
-                <Plus size={22} strokeWidth={2.5} />
+                <Plus size={14} />
               </button>
-            ) : (
-              <div className="flex items-center gap-1 bg-[#00C853] rounded-full p-1">
-                <button
-                  onClick={handleRemove}
-                  className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center text-white"
-                >
-                  <Minus size={16} />
-                </button>
-                <span className="w-6 text-center font-bold text-white">{quantity}</span>
-                <button
-                  onClick={handleAdd}
-                  className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center text-white"
-                >
-                  <Plus size={16} />
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Desktop badge */}
-          {quantity > 0 && (
-            <div className="hidden lg:flex items-center gap-1.5 bg-[#00C853]/10 text-[#00C853] px-3 py-1.5 rounded-full">
-              <Check size={16} strokeWidth={2.5} />
-              <span className="font-bold">{quantity}×</span>
             </div>
           )}
         </div>
+
+        {/* Desktop Badge */}
+        {quantity > 0 && (
+          <div className="hidden lg:flex items-center gap-1 bg-rose-50 text-rose-600 px-2 py-1 rounded-full mt-2 w-fit">
+            <Check size={14} strokeWidth={2.5} />
+            <span className="text-xs font-bold">{quantity}× im Warenkorb</span>
+          </div>
+        )}
       </div>
     </div>
   );

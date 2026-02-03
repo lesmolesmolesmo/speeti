@@ -14,11 +14,16 @@ api.interceptors.request.use((config) => {
 export const useStore = create(
   persist(
     (set, get) => ({
-      // Auth
+      // Auth - user wird jetzt auch persistiert!
       user: null,
       token: null,
       
-      setToken: (token) => set({ token }),
+      setToken: (token) => {
+        localStorage.setItem('speeti-token', token);
+        set({ token });
+      },
+      
+      setUser: (user) => set({ user }),
       
       login: async (email, password) => {
         const { data } = await api.post('/auth/login', { email, password });
@@ -40,11 +45,17 @@ export const useStore = create(
       },
       
       fetchUser: async () => {
+        const token = get().token || localStorage.getItem('speeti-token');
+        if (!token) return null;
+        
         try {
           const { data } = await api.get('/auth/me');
           set({ user: data });
+          return data;
         } catch (e) {
+          // Token ungültig - logout
           get().logout();
+          return null;
         }
       },
       
@@ -115,17 +126,14 @@ export const useStore = create(
       
       // Categories & Products
       categories: [],
-      products: [],
       
       fetchCategories: async () => {
-        const { data } = await api.get('/categories');
-        set({ categories: data });
-      },
-      
-      fetchProducts: async (category = null) => {
-        const params = category ? { category } : {};
-        const { data } = await api.get('/products', { params });
-        set({ products: data });
+        try {
+          const { data } = await api.get('/categories');
+          set({ categories: data });
+        } catch (e) {
+          console.error(e);
+        }
       },
       
       // Orders
@@ -152,7 +160,12 @@ export const useStore = create(
     }),
     {
       name: 'speeti-storage',
-      partialize: (state) => ({ cart: state.cart, token: state.token })
+      // WICHTIG: user UND token persistieren!
+      partialize: (state) => ({ 
+        cart: state.cart, 
+        token: state.token,
+        user: state.user 
+      })
     }
   )
 );

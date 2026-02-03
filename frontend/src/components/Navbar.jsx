@@ -24,11 +24,11 @@ export default function Navbar() {
             to={path}
             className={`flex flex-col items-center justify-center flex-1 h-full transition-colors ${
               isActive(path) 
-                ? 'text-primary-600' 
+                ? 'text-rose-500' 
                 : 'text-gray-400 hover:text-gray-600'
             }`}
           >
-            <Icon size={24} strokeWidth={isActive(path) ? 2.5 : 2} />
+            <Icon size={22} strokeWidth={isActive(path) ? 2.5 : 2} />
             <span className="text-[10px] mt-1 font-medium">{label}</span>
           </Link>
         ))}
