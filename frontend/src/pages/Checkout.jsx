@@ -46,6 +46,13 @@ const generateTimeSlots = () => {
   return slots;
 };
 
+// Münster PLZ ranges (48xxx)
+const MUENSTER_PLZ = ['48143', '48145', '48147', '48149', '48151', '48153', '48155', '48157', '48159', '48161', '48163', '48165', '48167'];
+const isValidMuensterPLZ = (plz) => {
+  const cleaned = plz.replace(/\s/g, '');
+  return cleaned.length === 5 && cleaned.startsWith('48');
+};
+
 // Payment method icons
 const PaymentIcon = ({ method }) => {
   switch (method) {
@@ -96,8 +103,18 @@ export default function Checkout() {
   }, []);
 
   const handleAddAddress = async () => {
-    if (!newAddress.street || !newAddress.house_number || !newAddress.postal_code) return;
-    await addAddress({ ...newAddress, is_default: true });
+    if (!newAddress.street || !newAddress.house_number || !newAddress.postal_code) {
+      setError('Bitte fülle alle Pflichtfelder aus');
+      return;
+    }
+    
+    // Validate Münster PLZ
+    if (!isValidMuensterPLZ(newAddress.postal_code)) {
+      setError('Wir liefern derzeit nur nach Münster (PLZ 48xxx). Bitte gib eine gültige Münsteraner Postleitzahl ein.');
+      return;
+    }
+    
+    await addAddress({ ...newAddress, city: 'Münster', is_default: true });
     setShowAddressForm(false);
     setNewAddress({ street: '', house_number: '', postal_code: '', instructions: '' });
   };
@@ -263,10 +280,26 @@ export default function Checkout() {
           </div>
         )}
 
+        {/* Delivery Area Notice */}
+        <section className="bg-gradient-to-r from-rose-50 to-pink-50 border border-rose-100 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <MapPin size={20} className="text-rose-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900">Liefergebiet: Münster</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Wir liefern aktuell nur innerhalb von Münster (PLZ 48xxx). 
+                Lieferzeit: 15-20 Minuten 🚴
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Delivery Address */}
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <MapPin size={20} className="text-rose-500" /> Lieferadresse
+            <MapPin size={20} className="text-rose-500" /> Lieferadresse auswählen
           </h2>
 
           {addresses.map(addr => (
@@ -291,36 +324,67 @@ export default function Checkout() {
               animate={{ opacity: 1, height: 'auto' }}
               className="space-y-3 pt-2"
             >
-              <input
-                type="text"
-                placeholder="Straße"
-                value={newAddress.street}
-                onChange={(e) => setNewAddress({ ...newAddress, street: e.target.value })}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
-              />
-              <div className="flex gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Straße *</label>
                 <input
                   type="text"
-                  placeholder="Hausnr."
-                  value={newAddress.house_number}
-                  onChange={(e) => setNewAddress({ ...newAddress, house_number: e.target.value })}
-                  className="w-1/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
-                />
-                <input
-                  type="text"
-                  placeholder="PLZ"
-                  value={newAddress.postal_code}
-                  onChange={(e) => setNewAddress({ ...newAddress, postal_code: e.target.value })}
-                  className="w-2/3 p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  placeholder="z.B. Hammer Straße"
+                  value={newAddress.street}
+                  onChange={(e) => setNewAddress({ ...newAddress, street: e.target.value })}
+                  className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
               </div>
-              <input
-                type="text"
-                placeholder="Hinweise für Fahrer (optional)"
-                value={newAddress.instructions}
-                onChange={(e) => setNewAddress({ ...newAddress, instructions: e.target.value })}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
-              />
+              <div className="flex gap-3">
+                <div className="w-1/3">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Hausnr. *</label>
+                  <input
+                    type="text"
+                    placeholder="12a"
+                    value={newAddress.house_number}
+                    onChange={(e) => setNewAddress({ ...newAddress, house_number: e.target.value })}
+                    className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">PLZ (Münster) *</label>
+                  <input
+                    type="text"
+                    placeholder="48xxx"
+                    maxLength={5}
+                    value={newAddress.postal_code}
+                    onChange={(e) => setNewAddress({ ...newAddress, postal_code: e.target.value.replace(/\D/g, '').slice(0, 5) })}
+                    className={`w-full p-3 border rounded-xl focus:outline-none focus:ring-2 ${
+                      newAddress.postal_code && !isValidMuensterPLZ(newAddress.postal_code)
+                        ? 'border-red-300 focus:ring-red-500 bg-red-50'
+                        : 'border-gray-200 focus:ring-rose-500'
+                    }`}
+                  />
+                  {newAddress.postal_code && !isValidMuensterPLZ(newAddress.postal_code) && (
+                    <p className="text-xs text-red-500 mt-1">⚠️ Nur PLZ 48xxx (Münster)</p>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Stadt</label>
+                <input
+                  type="text"
+                  value="Münster"
+                  disabled
+                  className="w-full p-3 border border-gray-200 rounded-xl bg-gray-100 text-gray-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  📝 Hinweise für Fahrer <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <textarea
+                  placeholder="z.B. 3. Stock, Hinterhaus, Klingel defekt - bitte anrufen..."
+                  value={newAddress.instructions}
+                  onChange={(e) => setNewAddress({ ...newAddress, instructions: e.target.value })}
+                  rows={2}
+                  className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+                />
+              </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowAddressForm(false)}
