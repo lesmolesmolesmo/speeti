@@ -377,7 +377,7 @@ export default function Driver() {
                 <p className="font-medium">{selectedOrder.street} {selectedOrder.house_number}</p>
                 <p className="text-gray-500">{selectedOrder.postal_code} {selectedOrder.city}</p>
                 {selectedOrder.instructions && (
-                  <p className="mt-2 text-sm bg-yellow-50 text-yellow-800 p-2 rounded">📝 {selectedOrder.instructions}</p>
+                  <p className="mt-2 text-sm bg-yellow-50 text-yellow-800 p-2 rounded">{selectedOrder.instructions}</p>
                 )}
                 <button
                   onClick={() => openNavigation(selectedOrder)}

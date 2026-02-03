@@ -124,7 +124,7 @@ export default function OrderDetail() {
           <p className="text-gray-600">{currentOrder.street} {currentOrder.house_number}</p>
           <p className="text-gray-600">{currentOrder.postal_code} {currentOrder.city}</p>
           {currentOrder.instructions && (
-            <p className="text-sm text-gray-500 mt-2">📝 {currentOrder.instructions}</p>
+            <p className="text-sm text-gray-500 mt-2">{currentOrder.instructions}</p>
           )}
         </section>
 

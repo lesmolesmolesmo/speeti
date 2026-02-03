@@ -85,7 +85,7 @@ export default function Admin() {
     <div className="space-y-6">
       {/* Welcome Banner */}
       <div className="bg-gradient-to-r from-primary-600 to-teal-500 rounded-2xl p-6 text-white">
-        <h1 className="text-2xl font-bold mb-1">Willkommen zurück! 👋</h1>
+        <h1 className="text-2xl font-bold mb-1">Willkommen zurück! </h1>
         <p className="text-white/80">Hier ist dein Überblick für heute.</p>
       </div>
 

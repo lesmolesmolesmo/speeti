@@ -161,7 +161,7 @@ export default function Home() {
                 to={`/category/${cat.slug}`}
                 className="flex-shrink-0 px-3 py-2 text-sm font-medium text-gray-600 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors whitespace-nowrap"
               >
-                {cat.icon} {cat.name}
+                {cat.name}
               </Link>
             ))}
           </div>
@@ -245,7 +245,7 @@ export default function Home() {
         {productsByCategory.map((cat) => (
           <ProductRow 
             key={cat.id}
-            title={`${cat.icon} ${cat.name}`}
+            title={cat.name}
             products={cat.products}
             link={`/category/${cat.slug}`}
           />
@@ -272,10 +272,10 @@ export default function Home() {
         {/* Footer */}
         <div className="py-8 px-4 text-center border-t border-gray-200 bg-white">
           <p className="text-sm text-gray-400">
-            🕐 Täglich 08:00 - 22:00 • 📍 Münster
+            Täglich 08:00 - 22:00 Uhr · Münster
           </p>
           <p className="text-sm text-gray-400 mt-1">
-            © 2024 Speeti • Made with ❤️
+            © 2024 Speeti
           </p>
         </div>
       </main>
