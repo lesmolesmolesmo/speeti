@@ -47,37 +47,37 @@ const curatedCollections = [
     id: 'filmabend',
     title: 'Filmabend',
     image: 'https://images.unsplash.com/photo-1585647347483-22b66260dfff?w=400&h=300&fit=crop',
-    searchQuery: 'popcorn,chips,cola,snacks'
+    categorySlug: 'chips-knabbereien'
   },
   {
     id: 'morgen',
     title: 'Dein Morgen',
     image: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400&h=300&fit=crop',
-    searchQuery: 'kaffee,croissant,müsli,saft'
+    categorySlug: 'fruehstueck'
   },
   {
     id: 'grill',
     title: 'Grill-Saison',
     image: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400&h=300&fit=crop',
-    searchQuery: 'fleisch,wurst,sauce,bier'
-  },
-  {
-    id: 'green',
-    title: 'Green Power',
-    image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&h=300&fit=crop',
-    searchQuery: 'gemüse,salat,vegan,bio'
+    categorySlug: 'grillen'
   },
   {
     id: 'party',
     title: 'Party Time',
     image: 'https://images.unsplash.com/photo-1496843916299-590492c751f4?w=400&h=300&fit=crop',
-    searchQuery: 'bier,wein,chips,dips'
+    categorySlug: 'party'
   },
   {
     id: 'suesses',
     title: 'Sweet Tooth',
     image: 'https://images.unsplash.com/photo-1558961363-fa8fdf82db35?w=400&h=300&fit=crop',
-    searchQuery: 'schokolade,kuchen,eis,süß'
+    categorySlug: 'schokolade'
+  },
+  {
+    id: 'kaffee',
+    title: 'Kaffee-Pause',
+    image: 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400&h=300&fit=crop',
+    categorySlug: 'kaffee'
   }
 ];
 
@@ -359,7 +359,7 @@ export default function Home() {
           {curatedCollections.map((collection) => (
             <Link
               key={collection.id}
-              to={`/search?q=${encodeURIComponent(collection.searchQuery)}`}
+              to={`/category/${collection.categorySlug}`}
               className="flex-shrink-0 group"
             >
               <div className="w-36 lg:w-44 rounded-xl overflow-hidden relative shadow-md group-hover:shadow-xl transition-all duration-200 group-hover:scale-[1.02]" style={{ aspectRatio: '4/3' }}>
