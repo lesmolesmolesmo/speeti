@@ -41,22 +41,45 @@ const heroSlides = [
   }
 ];
 
-// Category Images for Visual Slider (Flink/Gorillas style)
-const categoryImages = {
-  'milch-kaese': 'https://images.unsplash.com/photo-1628088062854-d1870b4553da?w=200&h=200&fit=crop',
-  'fleisch-wurst': 'https://images.unsplash.com/photo-1607623814075-e51df1bdc82f?w=200&h=200&fit=crop',
-  'brot-backwaren': 'https://images.unsplash.com/photo-1509440159596-0249088772ff?w=200&h=200&fit=crop',
-  'haushalt': 'https://images.unsplash.com/photo-1563453392212-326f5e854473?w=200&h=200&fit=crop',
-  'baby-kind': 'https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=200&h=200&fit=crop',
-  'wasser': 'https://images.unsplash.com/photo-1548839140-29a749e1cf4d?w=200&h=200&fit=crop',
-  'softdrinks-cola': 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=200&h=200&fit=crop',
-  'bier': 'https://images.unsplash.com/photo-1535958636474-b021ee887b13?w=200&h=200&fit=crop',
-  'wein-sekt': 'https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=200&h=200&fit=crop',
-  'tiefkuehl': 'https://images.unsplash.com/photo-1560008581-09826d1de69e?w=200&h=200&fit=crop',
-  'suessigkeiten': 'https://images.unsplash.com/photo-1582058091505-f87a2e55a40f?w=200&h=200&fit=crop',
-  'snacks': 'https://images.unsplash.com/photo-1621939514649-280e2ee25f60?w=200&h=200&fit=crop',
-  'default': 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=200&h=200&fit=crop'
-};
+// Curated Collections - Shopping occasions (Themenwelten)
+const curatedCollections = [
+  {
+    id: 'filmabend',
+    title: 'Filmabend',
+    image: 'https://images.unsplash.com/photo-1585647347483-22b66260dfff?w=400&h=300&fit=crop',
+    searchQuery: 'popcorn,chips,cola,snacks'
+  },
+  {
+    id: 'morgen',
+    title: 'Dein Morgen',
+    image: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400&h=300&fit=crop',
+    searchQuery: 'kaffee,croissant,müsli,saft'
+  },
+  {
+    id: 'grill',
+    title: 'Grill-Saison',
+    image: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400&h=300&fit=crop',
+    searchQuery: 'fleisch,wurst,sauce,bier'
+  },
+  {
+    id: 'green',
+    title: 'Green Power',
+    image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&h=300&fit=crop',
+    searchQuery: 'gemüse,salat,vegan,bio'
+  },
+  {
+    id: 'party',
+    title: 'Party Time',
+    image: 'https://images.unsplash.com/photo-1496843916299-590492c751f4?w=400&h=300&fit=crop',
+    searchQuery: 'bier,wein,chips,dips'
+  },
+  {
+    id: 'suesses',
+    title: 'Sweet Tooth',
+    image: 'https://images.unsplash.com/photo-1558961363-fa8fdf82db35?w=400&h=300&fit=crop',
+    searchQuery: 'schokolade,kuchen,eis,süß'
+  }
+];
 
 // ProductRow Component
 const ProductRow = memo(({ title, products, link, icon: Icon }) => {
@@ -324,32 +347,34 @@ export default function Home() {
         </Swiper>
       </section>
 
-      {/* Visual Category Slider (Flink/Gorillas style) */}
-      <section className="py-3">
+      {/* Curated Collections - Themenwelten (Netflix style) */}
+      <section className="py-4">
+        <div className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto mb-3">
+          <h2 className="text-base font-bold text-gray-900">Entdecke Themenwelten</h2>
+        </div>
         <div 
-          className="flex gap-3 overflow-x-auto px-4 lg:px-0 lg:max-w-4xl lg:mx-auto pb-1 scrollbar-hide"
+          className="flex gap-3 overflow-x-auto px-4 lg:px-0 lg:max-w-4xl lg:mx-auto pb-2 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
-          {categories.slice(0, 8).map((cat) => (
+          {curatedCollections.map((collection) => (
             <Link
-              key={cat.id}
-              to={`/category/${cat.slug}`}
+              key={collection.id}
+              to={`/search?q=${encodeURIComponent(collection.searchQuery)}`}
               className="flex-shrink-0 group"
             >
-              <div className="w-20 h-20 lg:w-24 lg:h-24 rounded-2xl overflow-hidden relative shadow-sm group-hover:shadow-md transition-shadow">
+              <div className="w-36 lg:w-44 rounded-xl overflow-hidden relative shadow-md group-hover:shadow-xl transition-all duration-200 group-hover:scale-[1.02]" style={{ aspectRatio: '4/3' }}>
                 <img
-                  src={categoryImages[cat.slug] || categoryImages.default}
-                  alt={cat.name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                  src={collection.image}
+                  alt={collection.title}
+                  className="w-full h-full object-cover"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-                <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-2xl drop-shadow-lg">
-                  {cat.icon || '📦'}
-                </span>
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+                <div className="absolute bottom-0 left-0 right-0 p-3">
+                  <h3 className="text-white font-bold text-sm lg:text-base drop-shadow-lg">
+                    {collection.title}
+                  </h3>
+                </div>
               </div>
-              <p className="text-xs font-medium text-gray-700 text-center mt-1.5 max-w-20 lg:max-w-24 truncate">
-                {cat.name}
-              </p>
             </Link>
           ))}
         </div>
