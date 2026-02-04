@@ -421,19 +421,26 @@ export default function Home() {
         </section>
       )}
 
-      {/* Category Pills */}
-      <section className="py-4">
-        <div className="flex gap-2 overflow-x-auto px-4 lg:px-0 lg:max-w-4xl lg:mx-auto pb-2 scrollbar-hide">
-          {categories.map((cat) => (
-            <Link
-              key={cat.id}
-              to={`/category/${cat.slug}`}
-              className="flex-shrink-0 flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 hover:border-rose-300 hover:bg-rose-50 transition-colors shadow-sm"
-            >
-              <span className="text-lg">{cat.icon}</span>
-              <span className="text-sm font-medium text-gray-700 whitespace-nowrap">{cat.name}</span>
-            </Link>
-          ))}
+      {/* Category Icon Grid (Lieferando/Wolt style) */}
+      <section className="py-6">
+        <div className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto">
+          <h2 className="text-base font-bold text-gray-900 mb-4">Alle Kategorien</h2>
+          <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+            {categories.slice(0, 20).map((cat) => (
+              <Link
+                key={cat.id}
+                to={`/category/${cat.slug}`}
+                className="group flex flex-col items-center"
+              >
+                <div className="w-16 h-16 lg:w-20 lg:h-20 bg-gray-50 rounded-2xl flex items-center justify-center shadow-sm group-hover:shadow-md group-hover:scale-105 group-hover:bg-rose-50 transition-all duration-200">
+                  <span className="text-2xl lg:text-3xl">{cat.icon || '📦'}</span>
+                </div>
+                <span className="text-xs font-medium text-gray-600 mt-1.5 text-center line-clamp-2 max-w-16 lg:max-w-20">
+                  {cat.name.split(' ')[0]}
+                </span>
+              </Link>
+            ))}
+          </div>
         </div>
       </section>
 
