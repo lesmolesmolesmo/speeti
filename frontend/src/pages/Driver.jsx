@@ -71,7 +71,7 @@ const OrderCard = memo(({ order, onAccept, onDetails, showAccept, isOnline }) =>
         {/* Time */}
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <Clock size={14} />
-          <span>{new Date(order.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} Uhr</span>
+          <span>{new Date(order.created_at).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' })} Uhr</span>
           {order.instructions && (
             <>
               <span className="text-gray-300">•</span>
@@ -103,7 +103,9 @@ OrderCard.displayName = 'OrderCard';
 
 export default function Driver() {
   const navigate = useNavigate();
-  const { user, logout } = useStore();
+  const user = useStore(state => state.user);
+  const logout = useStore(state => state.logout);
+  const _hasHydrated = useStore(state => state._hasHydrated);
   
   const [isOnline, setIsOnline] = useState(() => localStorage.getItem('driverOnline') === 'true');
   const [orders, setOrders] = useState([]);
@@ -115,7 +117,8 @@ export default function Driver() {
   const [showMenu, setShowMenu] = useState(false);
 
   useEffect(() => {
-    if (!user || user.role !== 'driver') {
+    if (!_hasHydrated) return <div className='min-h-screen flex items-center justify-center'><div className='w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin'></div></div>;
+  if (!user || user.role !== 'driver') {
       navigate('/login?redirect=/driver');
       return;
     }

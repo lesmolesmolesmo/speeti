@@ -22,7 +22,8 @@ export default function Login() {
     password: '',
   });
 
-  const { setToken, fetchUser } = useStore();
+  const setToken = useStore(state => state.setToken);
+  const fetchUser = useStore(state => state.fetchUser);
 
   // Phone validation - German format
   const isValidPhone = (phone) => {
@@ -242,10 +243,17 @@ export default function Login() {
                 </>
               )}
             </button>
+
+            {!isRegister && (
+              <Link to="/reset-password" className="block text-center mt-4 text-sm text-gray-500 hover:text-rose-500">
+                Passwort vergessen?
+              </Link>
+            )}
           </form>
 
           {/* Footer */}
           <div className="px-8 pb-8 text-center">
+
             <p className="text-gray-500 text-sm">
               {isRegister ? 'Bereits ein Konto?' : 'Noch kein Konto?'}{' '}
               <button

@@ -1,0 +1,1464 @@
+import { useState, useEffect, useMemo, useRef, startTransition } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  LayoutDashboard, Package, Grid3X3, ShoppingBag, Users, Truck, Settings, 
+  Plus, Edit2, Trash2, Search, X, Save, Eye, EyeOff,
+  TrendingUp, DollarSign, Clock, CheckCircle, AlertCircle, MapPin, Phone,
+  Calendar, BarChart3, ArrowUpRight, ArrowDownRight, Filter, Download,
+  Printer, RefreshCw, Bell, ChevronDown, ChevronRight, Copy, ExternalLink,
+  Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer, Headphones,
+  MessageCircle, Bot, User, UserCheck, Send, Warehouse, ScanLine, Upload, LogOut, Loader2, Sparkles, Star
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import AdminDashboard from './AdminDashboard';
+import { useStore, api } from '../store';
+import ProductModal from '../components/ProductModal';
+
+const tabs = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'orders', label: 'Bestellungen', icon: ShoppingBag, badge: true },
+  { id: 'products', label: 'Produkte', icon: Package },
+  { id: 'categories', label: 'Kategorien', icon: Grid3X3 },
+  { id: 'warehouse', label: 'Lager', icon: Warehouse, external: '/warehouse' },
+  { id: 'drivers', label: 'Fahrer', icon: Truck },
+  { id: 'customers', label: 'Kunden', icon: Users },
+  { id: 'support', label: 'Support', icon: Headphones, supportBadge: true },
+  { id: 'reviews', label: 'Bewertungen', icon: Star },
+  { id: 'analytics', label: 'Statistiken', icon: BarChart3 },
+  { id: 'settings', label: 'Einstellungen', icon: Settings },
+];
+
+const orderStatuses = {
+  pending: { label: 'Neu', color: 'yellow', bg: 'bg-yellow-100', text: 'text-yellow-700' },
+  confirmed: { label: 'Bestätigt', color: 'blue', bg: 'bg-blue-100', text: 'text-blue-700' },
+  picking: { label: 'Wird gepackt', color: 'indigo', bg: 'bg-indigo-100', text: 'text-indigo-700' },
+  picked: { label: 'Gepackt', color: 'purple', bg: 'bg-purple-100', text: 'text-purple-700' },
+  delivering: { label: 'Unterwegs', color: 'primary', bg: 'bg-primary-100', text: 'text-primary-700' },
+  delivered: { label: 'Geliefert', color: 'green', bg: 'bg-green-100', text: 'text-green-700' },
+  cancelled: { label: 'Storniert', color: 'red', bg: 'bg-red-100', text: 'text-red-700' }
+};
+
+export default function Admin() {
+  const navigate = useNavigate();
+  const { user, logout, _hasHydrated } = useStore();
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [stats, setStats] = useState({});
+  const [orders, setOrders] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [showModal, setShowModal] = useState(null);
+  const [editItem, setEditItem] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [orderFilter, setOrderFilter] = useState('all');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [selectedTicket, setSelectedTicket] = useState(null);
+  const [ticketMessages, setTicketMessages] = useState([]);
+  const [adminReviews, setAdminReviews] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  // MOVED to SupportTab: const [supportReply, setSupportReply] = useState('');
+  
+  
+  
+
+  useEffect(() => {
+    if (!user || user.role !== 'admin') {
+      navigate('/login?redirect=/admin');
+      return;
+    }
+    loadData().finally(() => setIsLoading(false));
+    // Auto refresh every 30s
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const loadData = async () => {
+    try {
+      const [statsRes, ordersRes, productsRes, catsRes, usersRes, supportRes, reviewsRes] = await Promise.all([
+        api.get('/admin/stats'),
+        api.get('/orders'),
+        api.get('/products'),
+        api.get('/categories'),
+        api.get('/admin/users'),
+        api.get('/admin/support').catch(() => ({ data: [] })),
+        api.get("/admin/reviews").catch(() => ({ data: [] }))
+      ]);
+      // Batch all state updates in startTransition to prevent render conflicts
+      startTransition(() => {
+        setStats(statsRes.data);
+        setOrders(ordersRes.data);
+        setProducts(productsRes.data);
+        setCategories(catsRes.data);
+        setUsers(usersRes.data);
+        setSupportTickets(supportRes.data);
+        setAdminReviews(reviewsRes.data);
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const pendingCount = orders.filter(o => ['pending', 'confirmed', 'picking'].includes(o.status)).length;
+  const escalatedCount = supportTickets.filter(t => t.escalated && t.status === 'open').length;
+
+  // ============ DASHBOARD ============
+  // Moved to AdminDashboard.jsx
+
+  // ============ ORDERS ============
+  const OrderRow = ({ order, compact, onClick }) => {
+    const status = orderStatuses[order.status] || orderStatuses.pending;
+    return (
+      <div 
+        onClick={onClick}
+        className={`p-4 hover:bg-gray-50 cursor-pointer transition-colors ${compact ? '' : 'border-b border-gray-100'}`}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-bold text-gray-900">#{order.id}</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${status.bg} ${status.text}`}>
+                {status.label}
+              </span>
+              {order.status === 'pending' && (
+                <span className="flex items-center gap-1 text-xs text-yellow-600 bg-yellow-50 px-2 py-0.5 rounded-full">
+                  <Bell size={10} /> Neu!
+                </span>
+              )}
+            </div>
+            <p className="font-medium text-gray-800">{order.customer_name}</p>
+            <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
+              <span className="flex items-center gap-1">
+                <Phone size={12} /> {order.customer_phone || 'Keine Nr.'}
+              </span>
+              <span className="flex items-center gap-1">
+                <Package size={12} /> {order.items?.length || 0} Artikel
+              </span>
+            </div>
+            {/* Full Address */}
+            <div className="flex items-start gap-1 mt-2 text-sm text-gray-600 bg-gray-50 rounded-lg p-2">
+              <MapPin size={14} className="text-primary-500 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="font-medium">{order.street} {order.house_number}</p>
+                <p>{order.postal_code} {order.city}</p>
+                {order.instructions && (
+                  <p className="text-xs text-primary-600 mt-1">📝 {order.instructions}</p>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <p className="font-bold text-lg text-gray-900">{order.total?.toFixed(2)}€</p>
+            <p className="text-xs text-gray-400">
+              {new Date(order.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} Uhr
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const OrdersTab = () => {
+    const filteredOrders = orders.filter(o => orderFilter === 'all' || o.status === orderFilter);
+    
+    return (
+      <div className="space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold">Bestellungen</h2>
+            <p className="text-sm text-gray-500">{orders.length} Bestellungen insgesamt</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={loadData} className="p-2 hover:bg-gray-100 rounded-lg">
+              <RefreshCw size={18} />
+            </button>
+            <select 
+              value={orderFilter} 
+              onChange={(e) => setOrderFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            >
+              <option value="all">Alle Status</option>
+              {Object.entries(orderStatuses).map(([key, val]) => (
+                <option key={key} value={key}>{val.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Status Pills */}
+        <div className="flex gap-2 overflow-x-auto pb-2">
+          {Object.entries(orderStatuses).map(([key, val]) => {
+            const count = orders.filter(o => o.status === key).length;
+            return (
+              <button
+                key={key}
+                onClick={() => setOrderFilter(key === orderFilter ? 'all' : key)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  orderFilter === key ? `${val.bg} ${val.text}` : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {val.label}
+                <span className="bg-white/50 px-1.5 rounded-full text-xs">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Orders List */}
+        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          {filteredOrders.length === 0 ? (
+            <div className="p-12 text-center text-gray-400">
+              <ShoppingBag size={48} className="mx-auto mb-3 opacity-50" />
+              <p>Keine Bestellungen gefunden</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {filteredOrders.map(order => (
+                <div key={order.id} className="p-4 hover:bg-gray-50">
+                  <OrderRow order={order} onClick={() => setSelectedOrder(order)} />
+                  
+                  {/* Quick Actions */}
+                  <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100">
+                    <select 
+                      value={order.status}
+                      onChange={async (e) => {
+                        await api.patch(`/orders/${order.id}/status`, { status: e.target.value });
+                        loadData();
+                      }}
+                      className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    >
+                      {Object.entries(orderStatuses).map(([key, val]) => (
+                        <option key={key} value={key}>{val.label}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => setSelectedOrder(order)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="Details & Drucken">
+                      <Printer size={16} />
+                    </button>
+                    <button 
+                      onClick={() => {
+                        const addr = `${order.street} ${order.house_number}, ${order.postal_code} ${order.city}`;
+                        navigator.clipboard.writeText(addr);
+                      }}
+                      className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"
+                      title="Adresse kopieren"
+                    >
+                      <Copy size={16} />
+                    </button>
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${order.street} ${order.house_number}, ${order.postal_code} ${order.city}`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"
+                      title="In Maps öffnen"
+                    >
+                      <ExternalLink size={16} />
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ============ PRODUCTS ============
+  // Memoized filtered products to prevent unnecessary re-renders
+  const filteredProducts = useMemo(() => 
+    products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())),
+    [products, searchQuery]
+  );
+
+  // Products content as JSX (not a component) to prevent focus loss on re-render
+  const productsTab = (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Produkte</h2>
+          <p className="text-sm text-gray-500">{products.length} Produkte im Sortiment</p>
+        </div>
+        <button
+          onClick={() => { setEditItem(null); setShowModal('product'); }}
+          className="flex items-center gap-2 bg-primary-500 text-white px-4 py-2 rounded-xl hover:bg-primary-600 transition-colors"
+        >
+          <Plus size={20} /> Neues Produkt
+        </button>
+      </div>
+
+      <div className="relative">
+        <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          type="text"
+          placeholder="Produkt suchen..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+        />
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Produkt</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Kategorie</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Preis</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Bestand</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Status</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Aktionen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredProducts.map(product => (
+              <tr key={product.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
+                      {product.image ? (
+                        <img src={product.image} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Package size={20} className="text-gray-400" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900">{product.name}</p>
+                      <p className="text-xs text-gray-500">{product.unit_amount} {product.unit}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600">{product.category_name}</td>
+                <td className="px-4 py-3 font-semibold text-gray-900">{product.price.toFixed(2)}€</td>
+                <td className="px-4 py-3 text-sm">{product.stock_count || '∞'}</td>
+                <td className="px-4 py-3">
+                  <span className={`text-xs px-2 py-1 rounded-full ${product.in_stock ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {product.in_stock ? 'Verfügbar' : 'Ausverkauft'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button onClick={() => { setEditItem(product); setShowModal('product'); }} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500">
+                    <Edit2 size={16} />
+                  </button>
+                  <button onClick={async () => { if(confirm('Löschen?')) { await api.delete(`/admin/products/${product.id}`); loadData(); }}} className="p-2 hover:bg-red-50 rounded-lg text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  // ProductModal is now a separate component
+
+  // ============ CATEGORIES ============
+  const CategoriesTab = () => (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold">Kategorien ({categories.length})</h2>
+        <button onClick={() => { setEditItem(null); setShowModal('category'); }} className="flex items-center gap-2 bg-primary-500 text-white px-4 py-2 rounded-xl hover:bg-primary-600">
+          <Plus size={20} /> Neue Kategorie
+        </button>
+      </div>
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {categories.map(cat => (
+          <div key={cat.id} className="bg-white rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-14 h-14 rounded-xl flex items-center justify-center text-2xl" style={{ backgroundColor: cat.color + '20' }}>{cat.icon}</div>
+              <div className="flex-1">
+                <h3 className="font-semibold">{cat.name}</h3>
+                <p className="text-xs text-gray-500">/{cat.slug}</p>
+                <p className="text-xs text-gray-400">{products.filter(p => p.category_id === cat.id).length} Produkte</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => { setEditItem(cat); setShowModal('category'); }} className="flex-1 py-2 border border-gray-200 rounded-xl text-sm hover:bg-gray-50">Bearbeiten</button>
+              <button onClick={async () => { if(confirm('Löschen?')) { await api.delete(`/admin/categories/${cat.id}`); loadData(); }}} className="px-4 py-2 border border-red-200 text-red-500 rounded-xl hover:bg-red-50">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ============ DRIVERS ============
+  const DriversTab = () => {
+    const drivers = users.filter(u => u.role === 'driver');
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">Fahrer ({drivers.length})</h2>
+          <button onClick={() => { setEditItem(null); setShowModal('driver'); }} className="flex items-center gap-2 bg-primary-500 text-white px-4 py-2 rounded-xl hover:bg-primary-600">
+            <Plus size={20} /> Neuer Fahrer
+          </button>
+        </div>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {drivers.map(driver => (
+            <div key={driver.id} className="bg-white rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-primary-100 rounded-full flex items-center justify-center">
+                  <Truck className="text-primary-600" size={24} />
+                </div>
+                <div>
+                  <h3 className="font-semibold">{driver.name}</h3>
+                  <p className="text-sm text-gray-500">{driver.email}</p>
+                  <p className="text-sm text-gray-500">{driver.phone}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // ============ CUSTOMERS ============
+  const CustomersTab = () => {
+    const customers = users.filter(u => u.role === 'customer');
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-bold">Kunden ({customers.length})</h2>
+        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Kunde</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Kontakt</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Registriert</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Bestellungen</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {customers.map(u => (
+                <tr key={u.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium">{u.name}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    <p>{u.email}</p>
+                    <p className="text-gray-400">{u.phone || '-'}</p>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-500">{new Date(u.created_at).toLocaleDateString('de-DE')}</td>
+                  <td className="px-4 py-3 text-sm">{orders.filter(o => o.user_id === u.id).length}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  // ============ SETTINGS ============
+  const SettingsTab = () => {
+    const [shopOpen, setShopOpen] = useState(null);
+    const [shopLoading, setShopLoading] = useState(false);
+    const [shopHours, setShopHours] = useState({ openingTime: '08:00', closingTime: '22:00' });
+    
+    const [settings, setSettings] = useState({
+      // Shop
+      shopName: 'Speeti',
+      slogan: 'Blitzschnell bei dir',
+      deliveryFee: '2.99',
+      freeDeliveryMin: '20',
+      minOrder: '10',
+      deliveryTime: '15-20',
+      hours: '08:00-22:00',
+      area: 'Münster',
+      // Business (für Rechnungen)
+      companyName: '',
+      companyStreet: '',
+      companyCity: '',
+      companyPostalCode: '',
+      companyPhone: '',
+      companyEmail: '',
+      companyWebsite: '',
+      // Tax
+      taxNumber: '',
+      vatId: '',
+      taxRateFood: '7',
+      taxRateOther: '19',
+      // Bank
+      bankName: '',
+      iban: '',
+      bic: '',
+    });
+    const [saving, setSaving] = useState(false);
+    const [saved, setSaved] = useState(false);
+
+    useEffect(() => {
+      // Load settings from backend
+      api.get('/admin/settings').then(({ data }) => {
+        if (data) setSettings(s => ({ ...s, ...data }));
+      }).catch(() => {});
+      
+      // Load shop status
+      api.get('/shop/status').then(({ data }) => {
+        setShopOpen(data.open);
+        setShopHours({ openingTime: data.openingTime, closingTime: data.closingTime });
+      }).catch(() => {});
+    }, []);
+    
+    const toggleShopStatus = async (action) => {
+      setShopLoading(true);
+      try {
+        const { data } = await api.post('/admin/shop/toggle', { action });
+        setShopOpen(data.open);
+      } catch (e) {
+        alert('Fehler beim Ändern des Shop-Status');
+      } finally {
+        setShopLoading(false);
+      }
+    };
+    
+    const updateShopHours = async () => {
+      try {
+        await api.put('/admin/shop/hours', shopHours);
+        alert('Öffnungszeiten gespeichert!');
+      } catch (e) {
+        alert('Fehler beim Speichern');
+      }
+    };
+
+    const saveSettings = async () => {
+      setSaving(true);
+      try {
+        await api.post('/admin/settings', settings);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } catch (e) {
+        alert('Fehler beim Speichern');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    const updateSetting = (key, value) => {
+      setSettings(s => ({ ...s, [key]: value }));
+    };
+
+    return (
+      <div className="max-w-3xl space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">Einstellungen</h2>
+          {saved && (
+            <span className="text-green-600 font-medium flex items-center gap-2">
+              <CheckCircle size={18} /> Gespeichert!
+            </span>
+          )}
+        </div>
+
+        {/* Shop Status Control - LIVE */}
+        <div className={`rounded-2xl p-6 shadow-sm space-y-4 ${shopOpen ? 'bg-green-50 border-2 border-green-200' : 'bg-amber-50 border-2 border-amber-200'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-4 h-4 rounded-full ${shopOpen ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
+              <div>
+                <h3 className="font-bold text-lg">{shopOpen ? '🟢 Shop ist GEÖFFNET' : '🟡 Shop ist GESCHLOSSEN'}</h3>
+                <p className="text-sm text-gray-600">
+                  Öffnungszeiten: {shopHours.openingTime} - {shopHours.closingTime} Uhr
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => toggleShopStatus('open')}
+                disabled={shopLoading || shopOpen === true}
+                className={`px-4 py-2 rounded-xl font-medium transition-colors ${
+                  shopOpen ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600'
+                }`}
+              >
+                Öffnen
+              </button>
+              <button
+                onClick={() => toggleShopStatus('close')}
+                disabled={shopLoading || shopOpen === false}
+                className={`px-4 py-2 rounded-xl font-medium transition-colors ${
+                  !shopOpen ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-amber-500 text-white hover:bg-amber-600'
+                }`}
+              >
+                Schließen
+              </button>
+              <button
+                onClick={() => toggleShopStatus('auto')}
+                disabled={shopLoading}
+                className="px-4 py-2 rounded-xl font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors"
+              >
+                Auto
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 pt-2 border-t border-gray-200">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">Öffnet:</label>
+              <input 
+                type="time" 
+                value={shopHours.openingTime} 
+                onChange={e => setShopHours(h => ({ ...h, openingTime: e.target.value }))}
+                className="px-3 py-1.5 border rounded-lg text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">Schließt:</label>
+              <input 
+                type="time" 
+                value={shopHours.closingTime}
+                onChange={e => setShopHours(h => ({ ...h, closingTime: e.target.value }))}
+                className="px-3 py-1.5 border rounded-lg text-sm"
+              />
+            </div>
+            <button
+              onClick={updateShopHours}
+              className="px-4 py-1.5 bg-rose-500 text-white rounded-lg text-sm font-medium hover:bg-rose-600"
+            >
+              Speichern
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            💡 <strong>Auto:</strong> Folgt den Öffnungszeiten automatisch · 
+            <strong>Öffnen/Schließen:</strong> Manuell überschreiben (z.B. für Feiertage oder längere Öffnung)
+          </p>
+        </div>
+
+        {/* Shop Settings */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Package size={18} className="text-rose-500" /> Shop-Einstellungen
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Shop-Name</label><input type="text" value={settings.shopName} onChange={e => updateSetting('shopName', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Slogan</label><input type="text" value={settings.slogan} onChange={e => updateSetting('slogan', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Liefergebühr (€)</label><input type="number" value={settings.deliveryFee} step="0.01" onChange={e => updateSetting('deliveryFee', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Gratis ab (€)</label><input type="number" value={settings.freeDeliveryMin} onChange={e => updateSetting('freeDeliveryMin', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Mindestbestellwert (€)</label><input type="number" value={settings.minOrder} onChange={e => updateSetting('minOrder', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Lieferzeit (Min)</label><input type="text" value={settings.deliveryTime} onChange={e => updateSetting('deliveryTime', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Öffnungszeiten</label><input type="text" value={settings.hours} onChange={e => updateSetting('hours', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Liefergebiet</label><input type="text" value={settings.area} onChange={e => updateSetting('area', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Business/Company Settings for Invoices */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Scale size={18} className="text-rose-500" /> Firmendaten (für Rechnungen)
+          </h3>
+          <p className="text-sm text-gray-500 -mt-2">Diese Daten erscheinen auf allen Rechnungen und Quittungen.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Firmenname *</label><input type="text" value={settings.companyName} onChange={e => updateSetting('companyName', e.target.value)} placeholder="z.B. Speeti GmbH" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Straße + Hausnummer *</label><input type="text" value={settings.companyStreet} onChange={e => updateSetting('companyStreet', e.target.value)} placeholder="z.B. Musterstraße 123" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">PLZ *</label><input type="text" value={settings.companyPostalCode} onChange={e => updateSetting('companyPostalCode', e.target.value)} placeholder="48149" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Stadt *</label><input type="text" value={settings.companyCity} onChange={e => updateSetting('companyCity', e.target.value)} placeholder="Münster" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">Telefon</label><input type="text" value={settings.companyPhone} onChange={e => updateSetting('companyPhone', e.target.value)} placeholder="+49 251 123456" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">E-Mail</label><input type="email" value={settings.companyEmail} onChange={e => updateSetting('companyEmail', e.target.value)} placeholder="info@speeti.de" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Website</label><input type="text" value={settings.companyWebsite} onChange={e => updateSetting('companyWebsite', e.target.value)} placeholder="www.speeti.de" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Tax Settings */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <Percent size={18} className="text-rose-500" /> Steuerdaten
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Steuernummer *</label><input type="text" value={settings.taxNumber} onChange={e => updateSetting('taxNumber', e.target.value)} placeholder="z.B. 123/456/78901" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">USt-IdNr.</label><input type="text" value={settings.vatId} onChange={e => updateSetting('vatId', e.target.value)} placeholder="z.B. DE123456789" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">MwSt. Lebensmittel (%)</label><input type="number" value={settings.taxRateFood} onChange={e => updateSetting('taxRateFood', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">MwSt. Sonstiges (%)</label><input type="number" value={settings.taxRateOther} onChange={e => updateSetting('taxRateOther', e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Bank Details */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm space-y-4">
+          <h3 className="font-semibold border-b pb-2 flex items-center gap-2">
+            <DollarSign size={18} className="text-rose-500" /> Bankverbindung (für Rechnungen)
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div><label className="block text-sm font-medium mb-1">Bank</label><input type="text" value={settings.bankName} onChange={e => updateSetting('bankName', e.target.value)} placeholder="z.B. Sparkasse Münsterland" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">IBAN</label><input type="text" value={settings.iban} onChange={e => updateSetting('iban', e.target.value)} placeholder="DE89 3704 0044 0532 0130 00" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+            <div><label className="block text-sm font-medium mb-1">BIC</label><input type="text" value={settings.bic} onChange={e => updateSetting('bic', e.target.value)} placeholder="COBADEFFXXX" className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" /></div>
+          </div>
+        </div>
+
+        {/* Save Button */}
+        <button 
+          onClick={saveSettings}
+          disabled={saving}
+          className="w-full bg-rose-500 text-white py-4 rounded-xl hover:bg-rose-600 font-semibold disabled:bg-gray-300 flex items-center justify-center gap-2"
+        >
+          {saving ? (
+            <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Speichert...</>
+          ) : (
+            <><Save size={20} /> Einstellungen speichern</>
+          )}
+        </button>
+      </div>
+    );
+  };
+
+  // ============ SUPPORT ============
+  const SupportTab = () => {
+    const [supportReply, setSupportReply] = useState('');
+    const inputRef = useRef(null);
+    // Restore focus after messages load
+    useEffect(() => {
+      if (selectedTicket && inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, [ticketMessages, selectedTicket]);
+    const [showClosed, setShowClosed] = useState(false);
+    const [supportStats, setSupportStats] = useState(null);
+    
+    const openTickets = supportTickets.filter(t => t.status === 'open');
+    const closedTickets = supportTickets.filter(t => t.status === 'closed');
+    const displayTickets = showClosed ? closedTickets : openTickets;
+    const humanTakeoverCount = openTickets.filter(t => t.human_takeover).length;
+    
+    useEffect(() => {
+      api.get('/admin/support/stats').then(r => setSupportStats(r.data)).catch(() => {});
+    }, []);  // Only fetch once
+    
+    const loadTicketMessages = async (ticketId) => {
+      try {
+        const { data } = await api.get(`/admin/support/${ticketId}`);
+        setSelectedTicket(data.ticket);
+        setTicketMessages(data.messages);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    
+    const sendReply = async () => {
+      if (!supportReply.trim() || !selectedTicket) return;
+      try {
+        await api.post(`/admin/support/${selectedTicket.id}/reply`, { message: supportReply });
+        setSupportReply('');
+        loadTicketMessages(selectedTicket.id);
+      } catch (e) {
+        alert('Fehler beim Senden');
+      }
+    };
+    
+    const toggleTakeover = async (ticketId, currentState) => {
+      try {
+        await api.post(`/admin/support/${ticketId}/takeover`, { takeover: !currentState });
+        loadTicketMessages(ticketId);
+        loadData();
+      } catch (e) {
+        alert('Fehler beim Übernehmen');
+      }
+    };
+    
+    const closeTicket = async (ticketId) => {
+      try {
+        await api.post(`/admin/support/${ticketId}/close`, { resolution: 'Vom Support geschlossen' });
+        setSelectedTicket(null);
+        loadData();
+      } catch (e) {
+        alert('Fehler');
+      }
+    };
+    
+    const reopenTicket = async (ticketId) => {
+      try {
+        await api.post(`/admin/support/${ticketId}/reopen`);
+        loadData();
+      } catch (e) {
+        alert('Fehler');
+      }
+    };
+    
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold">Support-Tickets</h2>
+            <p className="text-sm text-gray-500">{openTickets.length} offene Tickets, {closedTickets.length} geschlossen</p>
+          </div>
+          <button onClick={loadData} className="p-2 hover:bg-gray-100 rounded-lg">
+            <RefreshCw size={18} />
+          </button>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-gray-900">{supportStats?.open || openTickets.length}</p>
+            <p className="text-xs text-gray-500">Offen</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-red-600">{escalatedCount}</p>
+            <p className="text-xs text-gray-500">Eskaliert</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-blue-600">{humanTakeoverCount}</p>
+            <p className="text-xs text-gray-500">Übernommen</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-green-600">{supportStats?.closed || closedTickets.length}</p>
+            <p className="text-xs text-gray-500">Geschlossen</p>
+          </div>
+        </div>
+
+        {/* Escalation Alert */}
+        {escalatedCount > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
+            <AlertCircle className="text-red-500" size={24} />
+            <div className="flex-1">
+              <p className="font-semibold text-red-800">{escalatedCount} eskalierte Tickets benötigen Aufmerksamkeit!</p>
+              <p className="text-sm text-red-600">Kunden warten auf einen echten Mitarbeiter - bitte übernehmen!</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid lg:grid-cols-2 gap-4">
+          {/* Ticket List */}
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="p-3 border-b border-gray-100 flex gap-2">
+              <button 
+                onClick={() => setShowClosed(false)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${!showClosed ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Offen ({openTickets.length})
+              </button>
+              <button 
+                onClick={() => setShowClosed(true)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${showClosed ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Geschlossen ({closedTickets.length})
+              </button>
+            </div>
+            <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
+              {displayTickets.length === 0 ? (
+                <div className="p-8 text-center text-gray-400">
+                  <Headphones size={40} className="mx-auto mb-2 opacity-50" />
+                  <p>{showClosed ? 'Keine geschlossenen Tickets' : 'Keine offenen Tickets'}</p>
+                </div>
+              ) : (
+                displayTickets.map(ticket => (
+                  <div
+                    key={ticket.id}
+                    onClick={() => loadTicketMessages(ticket.id)}
+                    className={`p-4 cursor-pointer hover:bg-gray-50 transition-colors ${selectedTicket?.id === ticket.id ? 'bg-primary-50' : ''}`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">#{ticket.id}</span>
+                          {ticket.human_takeover ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                              🙋 Übernommen
+                            </span>
+                          ) : ticket.escalated ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium animate-pulse">
+                              🚨 Eskaliert
+                            </span>
+                          ) : (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                              🤖 KI
+                            </span>
+                          )}
+                          {ticket.status === 'closed' && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                              ✓ Geschlossen
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-600 mt-1">{ticket.user_name}</p>
+                        <p className="text-xs text-gray-400">{ticket.user_email}</p>
+                        {ticket.last_message && (
+                          <p className="text-xs text-gray-500 mt-1 truncate max-w-[200px]">"{ticket.last_message.substring(0, 50)}..."</p>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-gray-400">
+                          {new Date(ticket.created_at).toLocaleString('de-DE')}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">{ticket.message_count} Nachrichten</p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Chat View */}
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden flex flex-col">
+            {selectedTicket ? (
+              <>
+                {/* Ticket Header */}
+                <div className="p-4 border-b border-gray-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">Ticket #{selectedTicket.id}</span>
+                      {selectedTicket.human_takeover ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">🙋 Du antwortest</span>
+                      ) : selectedTicket.escalated ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 animate-pulse">🚨 Wartet auf Übernahme</span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">🤖 KI antwortet</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400">{selectedTicket.user_email}</p>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-3">{selectedTicket.user_name}</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {selectedTicket.status === 'open' ? (
+                      <>
+                        <button
+                          onClick={() => toggleTakeover(selectedTicket.id, selectedTicket.human_takeover)}
+                          className={`flex-1 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                            selectedTicket.human_takeover 
+                              ? 'bg-gray-200 text-gray-700 hover:bg-gray-300' 
+                              : 'bg-blue-500 text-white hover:bg-blue-600'
+                          }`}
+                        >
+                          {selectedTicket.human_takeover ? (
+                            <><Bot size={16} /> An KI zurückgeben</>
+                          ) : (
+                            <><UserCheck size={16} /> Übernehmen</>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => closeTicket(selectedTicket.id)}
+                          className="px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 flex items-center gap-2"
+                        >
+                          <CheckCircle size={16} /> Schließen
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => reopenTicket(selectedTicket.id)}
+                        className="flex-1 py-2 bg-amber-500 text-white rounded-xl text-sm font-medium hover:bg-amber-600 flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw size={16} /> Wieder öffnen
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px] max-h-[400px] bg-gray-50">
+                  {ticketMessages.map((msg, i) => (
+                    <div
+                      key={msg.id || i}
+                      className={`flex ${msg.sender_type === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div className={`flex items-end gap-2 max-w-[80%] ${msg.sender_type === 'user' ? 'flex-row-reverse' : ''}`}>
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
+                          msg.sender_type === 'user' 
+                            ? 'bg-gray-600 text-white' 
+                            : msg.sender_type === 'admin'
+                            ? 'bg-blue-500 text-white'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}>
+                          {msg.sender_type === 'user' ? <User size={14} /> : msg.sender_type === 'admin' ? <Headphones size={14} /> : <Bot size={14} />}
+                        </div>
+                        <div className={`px-3 py-2 rounded-2xl text-sm ${
+                          msg.sender_type === 'user'
+                            ? 'bg-gray-600 text-white rounded-br-sm'
+                            : msg.sender_type === 'admin'
+                            ? 'bg-blue-500 text-white rounded-bl-sm'
+                            : 'bg-white border border-gray-200 rounded-bl-sm'
+                        }`}>
+                          {msg.message}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Reply Input */}
+                <div className="p-4 border-t border-gray-100">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      ref={inputRef}
+                      value={supportReply}
+                      onChange={(e) => setSupportReply(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && sendReply()}
+                      placeholder="Antwort schreiben..."
+                      className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <button
+                      onClick={sendReply}
+                      disabled={!supportReply.trim()}
+                      className="px-4 bg-primary-500 text-white rounded-xl hover:bg-primary-600 disabled:opacity-50"
+                    >
+                      <Send size={18} />
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-gray-400 p-8">
+                <div className="text-center">
+                  <MessageCircle size={48} className="mx-auto mb-3 opacity-50" />
+                  <p>Wähle ein Ticket aus</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  // ============ REVIEWS TAB ============
+  const ReviewsTab = () => {
+    const averageRating = adminReviews && adminReviews.length > 0
+      ? (adminReviews.reduce((sum, r) => sum + ((r.order_rating || 0) + (r.driver_rating || 0)) / (r.order_rating && r.driver_rating ? 2 : 1), 0) / adminReviews.length).toFixed(1)
+      : '0.0';
+
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-amber-400 to-yellow-500 rounded-2xl p-6 text-white">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold mb-1">⭐ Kundenbewertungen</h1>
+              <p className="text-white/80">Alle Bewertungen im Überblick</p>
+            </div>
+            <div className="text-right">
+              <div className="text-4xl font-bold">{averageRating}</div>
+              <p className="text-white/80 text-sm">Durchschnitt</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center">
+                <Star size={20} className="text-yellow-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{adminReviews?.length || 0}</p>
+                <p className="text-xs text-gray-500">Gesamt</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center text-green-600 font-bold">5★</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => r.order_rating === 5 || r.driver_rating === 5).length}</p>
+                <p className="text-xs text-gray-500">5 Sterne</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 font-bold">4★</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => r.order_rating === 4 || r.driver_rating === 4).length}</p>
+                <p className="text-xs text-gray-500">4 Sterne</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center text-red-600 font-bold">≤3</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => (r.order_rating && r.order_rating <= 3) || (r.driver_rating && r.driver_rating <= 3)).length}</p>
+                <p className="text-xs text-gray-500">Kritisch</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Reviews List */}
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="font-bold text-gray-900">Alle Bewertungen</h2>
+            <span className="text-sm text-gray-500">{adminReviews?.length || 0} Einträge</span>
+          </div>
+          {adminReviews.length > 0 ? (
+            <div className="divide-y divide-gray-100">
+              {adminReviews.map((review, i) => (
+                <div key={i} className="p-4 hover:bg-gray-50 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="font-medium text-gray-900">{review.order_number || `#${review.order_id}`}</span>
+                        <span className="text-xs text-gray-400">
+                          {new Date(review.created_at).toLocaleDateString('de-DE', { 
+                            day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+                          })}
+                        </span>
+                      </div>
+                      
+                      {/* Order Rating */}
+                      {review.order_rating && (
+                        <div className="mb-2">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-500 w-20">Bestellung:</span>
+                            <div className="flex items-center gap-1">
+                              {[1,2,3,4,5].map(s => (
+                                <Star key={s} size={14} className={s <= review.order_rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'} />
+                              ))}
+                            </div>
+                          </div>
+                          {review.order_comment && (
+                            <p className="text-sm text-gray-600 mt-1 ml-[88px]">"{review.order_comment}"</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Driver Rating */}
+                      {review.driver_rating && (
+                        <div>
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-500 w-20">Fahrer:</span>
+                            <div className="flex items-center gap-1">
+                              {[1,2,3,4,5].map(s => (
+                                <Star key={s} size={14} className={s <= review.driver_rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'} />
+                              ))}
+                            </div>
+                            {review.driver_name && (
+                              <span className="text-xs text-gray-400">({review.driver_name})</span>
+                            )}
+                          </div>
+                          {review.driver_comment && (
+                            <p className="text-sm text-gray-600 mt-1 ml-[88px]">"{review.driver_comment}"</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Overall indicator */}
+                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                      (review.order_rating >= 4 && review.driver_rating >= 4) || (!review.driver_rating && review.order_rating >= 4)
+                        ? 'bg-green-100 text-green-700'
+                        : (review.order_rating <= 2 || review.driver_rating <= 2)
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {(review.order_rating >= 4 && (!review.driver_rating || review.driver_rating >= 4)) ? '👍 Gut' 
+                        : (review.order_rating <= 2 || review.driver_rating <= 2) ? '⚠️ Kritisch' 
+                        : '😐 OK'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="p-12 text-center">
+              <div className="text-5xl mb-3">⭐</div>
+              <h3 className="font-bold text-gray-900 mb-1">Noch keine Bewertungen</h3>
+              <p className="text-gray-500 text-sm">Bewertungen erscheinen hier sobald Kunden ihre Bestellungen bewerten.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ============ MODALS ============
+  const CategoryModal = () => {
+    const [form, setForm] = useState(editItem || { name: '', slug: '', icon: '📦', color: '#14B8A6' });
+    const handleSubmit = async (e) => {
+      e.preventDefault();
+      if (editItem) await api.put(`/admin/categories/${editItem.id}`, { ...form, active: 1 });
+      else await api.post('/admin/categories', form);
+      setShowModal(null); loadData();
+    };
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-2xl p-6 w-full max-w-md">
+          <h2 className="text-lg font-bold mb-4">{editItem ? 'Kategorie bearbeiten' : 'Neue Kategorie'}</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div><label className="block text-sm font-medium mb-1">Name</label><input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[äöüß\s]/g, c => ({ä:'ae',ö:'oe',ü:'ue',ß:'ss',' ':'-'})[c] || c)})} required className="w-full px-4 py-2 border rounded-xl" /></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><label className="block text-sm font-medium mb-1">Icon (Emoji)</label><input type="text" value={form.icon} onChange={(e) => setForm({...form, icon: e.target.value})} className="w-full px-4 py-2 border rounded-xl text-2xl text-center" /></div>
+              <div><label className="block text-sm font-medium mb-1">Farbe</label><input type="color" value={form.color} onChange={(e) => setForm({...form, color: e.target.value})} className="w-full h-10 border rounded-xl cursor-pointer" /></div>
+            </div>
+            <div className="flex gap-2"><button type="button" onClick={() => setShowModal(null)} className="flex-1 py-2 border rounded-xl">Abbrechen</button><button type="submit" className="flex-1 py-2 bg-primary-500 text-white rounded-xl">Speichern</button></div>
+          </form>
+        </motion.div>
+      </div>
+    );
+  };
+
+  const DriverModal = () => {
+    const [form, setForm] = useState({ name: '', email: '', phone: '', password: '' });
+    const handleSubmit = async (e) => { e.preventDefault(); await api.post('/admin/drivers', form); setShowModal(null); loadData(); };
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-2xl p-6 w-full max-w-md">
+          <h2 className="text-lg font-bold mb-4">Neuer Fahrer</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div><label className="block text-sm font-medium mb-1">Name</label><input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required className="w-full px-4 py-2 border rounded-xl" /></div>
+            <div><label className="block text-sm font-medium mb-1">E-Mail</label><input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} required className="w-full px-4 py-2 border rounded-xl" /></div>
+            <div><label className="block text-sm font-medium mb-1">Telefon</label><input type="tel" value={form.phone} onChange={(e) => setForm({...form, phone: e.target.value})} className="w-full px-4 py-2 border rounded-xl" /></div>
+            <div><label className="block text-sm font-medium mb-1">Passwort</label><input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} required minLength={6} className="w-full px-4 py-2 border rounded-xl" /></div>
+            <div className="flex gap-2"><button type="button" onClick={() => setShowModal(null)} className="flex-1 py-2 border rounded-xl">Abbrechen</button><button type="submit" className="flex-1 py-2 bg-primary-500 text-white rounded-xl">Anlegen</button></div>
+          </form>
+        </motion.div>
+      </div>
+    );
+  };
+
+  
+  // ============ ORDER DETAIL MODAL ============
+  const OrderDetailModal = () => {
+    if (!selectedOrder) return null;
+    const status = orderStatuses[selectedOrder.status] || orderStatuses.pending;
+    
+    const handlePrint = () => {
+      const printContent = `
+        <html>
+        <head>
+          <title>Bestellung #${selectedOrder.id}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; max-width: 400px; margin: 0 auto; }
+            h1 { font-size: 18px; border-bottom: 2px solid #000; padding-bottom: 10px; }
+            .info { margin: 10px 0; }
+            .items { margin: 20px 0; }
+            .item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #ccc; }
+            .total { font-weight: bold; font-size: 18px; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
+            .address { background: #f5f5f5; padding: 10px; margin: 10px 0; }
+          </style>
+        </head>
+        <body>
+          <h1>Speeti - Bestellung #${selectedOrder.id}</h1>
+          <div class="info">
+            <strong>Kunde:</strong> ${selectedOrder.customer_name}<br>
+            <strong>Tel:</strong> ${selectedOrder.customer_phone || '-'}<br>
+            <strong>Zeit:</strong> ${new Date(selectedOrder.created_at).toLocaleString('de-DE')}
+          </div>
+          <div class="address">
+            <strong>Lieferadresse:</strong><br>
+            ${selectedOrder.street} ${selectedOrder.house_number}<br>
+            ${selectedOrder.postal_code} ${selectedOrder.city}
+            ${selectedOrder.instructions ? '<br><em>Hinweis: ' + selectedOrder.instructions + '</em>' : ''}
+          </div>
+          <div class="items">
+            <strong>Artikel:</strong>
+            ${(selectedOrder.items || []).map(item => 
+              '<div class="item"><span>' + item.quantity + 'x ' + item.name + '</span><span>' + (item.price * item.quantity).toFixed(2) + ' EUR</span></div>'
+            ).join('')}
+          </div>
+          <div class="total">
+            Gesamt: ${selectedOrder.total?.toFixed(2)} EUR
+          </div>
+          <p style="margin-top:20px;font-size:12px;color:#666">Vielen Dank!</p>
+        </body>
+        </html>
+      `;
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(printContent);
+      printWindow.document.close();
+      printWindow.print();
+    };
+    
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <motion.div 
+          initial={{ scale: 0.95, opacity: 0 }} 
+          animate={{ scale: 1, opacity: 1 }} 
+          exit={{ scale: 0.95, opacity: 0 }}
+          className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col"
+        >
+          {/* Header */}
+          <div className={`p-4 flex items-center justify-between ${status.bg}`}>
+            <div>
+              <h2 className="text-lg font-bold">Bestellung #{selectedOrder.id}</h2>
+              <span className={`text-sm ${status.text}`}>{status.label}</span>
+            </div>
+            <button onClick={() => setSelectedOrder(null)} className="p-2 hover:bg-white/20 rounded-full">
+              <X size={20} />
+            </button>
+          </div>
+          
+          {/* Content */}
+          <div className="p-4 overflow-y-auto flex-1 space-y-4">
+            {/* Customer Info */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Kunde</h3>
+              <p className="font-medium">{selectedOrder.customer_name}</p>
+              {selectedOrder.customer_phone && (
+                <a href={`tel:${selectedOrder.customer_phone}`} className="text-primary-600 text-sm flex items-center gap-1 mt-1">
+                  <Phone size={14} /> {selectedOrder.customer_phone}
+                </a>
+              )}
+            </div>
+            
+            {/* Address */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Lieferadresse</h3>
+              <p className="font-medium">{selectedOrder.street} {selectedOrder.house_number}</p>
+              <p className="text-gray-600">{selectedOrder.postal_code} {selectedOrder.city}</p>
+              {selectedOrder.instructions && (
+                <p className="text-sm text-primary-600 mt-2 bg-primary-50 p-2 rounded-lg">{selectedOrder.instructions}</p>
+              )}
+            </div>
+            
+            {/* Items */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Artikel ({selectedOrder.items?.length || 0})</h3>
+              <div className="space-y-2">
+                {(selectedOrder.items || []).map((item, i) => (
+                  <div key={i} className="flex items-center justify-between py-2 border-b border-gray-200 last:border-0">
+                    <div className="flex items-center gap-3">
+                      {item.image && <img src={item.image} alt="" className="w-10 h-10 object-cover rounded-lg" />}
+                      <div>
+                        <p className="font-medium text-sm">{item.name}</p>
+                        <p className="text-xs text-gray-500">{item.quantity}x {item.price?.toFixed(2)}€</p>
+                      </div>
+                    </div>
+                    <span className="font-semibold">{(item.price * item.quantity).toFixed(2)}€</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {/* Total */}
+            <div className="bg-primary-50 rounded-xl p-3 flex items-center justify-between">
+              <span className="font-semibold text-primary-800">Gesamtsumme</span>
+              <span className="text-xl font-bold text-primary-600">{selectedOrder.total?.toFixed(2)}€</span>
+            </div>
+            
+            {/* Notes */}
+            {selectedOrder.notes && (
+              <div className="bg-yellow-50 rounded-xl p-3">
+                <h3 className="font-semibold text-sm text-yellow-700 mb-1">Anmerkungen</h3>
+                <p className="text-sm text-yellow-800">{selectedOrder.notes}</p>
+              </div>
+            )}
+          </div>
+          
+          {/* Actions */}
+          <div className="p-4 border-t border-gray-100 flex gap-2">
+            <button onClick={handlePrint} className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-gray-200 rounded-xl hover:bg-gray-50">
+              <Printer size={18} /> Drucken
+            </button>
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedOrder.street + ' ' + selectedOrder.house_number + ', ' + selectedOrder.postal_code + ' ' + selectedOrder.city)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary-500 text-white rounded-xl hover:bg-primary-600"
+            >
+              <ExternalLink size={18} /> Maps
+            </a>
+          </div>
+        </motion.div>
+      </div>
+    );
+  };
+
+  // ============ RENDER ============
+  if (!_hasHydrated || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-rose-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-500">Lade Admin Panel...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="min-h-screen bg-gray-100 flex">
+      {/* Sidebar */}
+      <aside className={`fixed lg:static inset-y-0 left-0 z-40 bg-white border-r border-gray-200 transition-all ${sidebarCollapsed ? 'w-16' : 'w-64'} hidden lg:block`}>
+        <div className="p-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-teal-500 rounded-xl flex items-center justify-center text-white font-bold text-lg">⚡</div>
+            {!sidebarCollapsed && <div><h1 className="font-bold text-gray-900">Speeti</h1><p className="text-xs text-gray-500">Admin Panel</p></div>}
+          </div>
+        </div>
+        <nav className="p-2 space-y-1">
+          {tabs.map(tab => (
+            <button key={tab.id} onClick={() => tab.external ? navigate(tab.external) : setActiveTab(tab.id)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${activeTab === tab.id ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-50'}`}
+            >
+              <tab.icon size={20} />
+              {!sidebarCollapsed && <span className="font-medium text-sm flex-1">{tab.label}</span>}
+              {tab.badge && pendingCount > 0 && !sidebarCollapsed && (
+                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">{pendingCount}</span>
+              )}
+              {tab.supportBadge && escalatedCount > 0 && !sidebarCollapsed && (
+                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full animate-pulse">{escalatedCount}</span>
+              )}
+              {tab.external && !sidebarCollapsed && <ExternalLink size={14} className="text-gray-400" />}
+            </button>
+          ))}
+        </nav>
+        {/* Logout Button */}
+        <div className="absolute bottom-0 left-0 right-0 p-2 border-t border-gray-100 bg-white">
+          <button
+            onClick={() => { logout(); navigate('/login'); }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors text-red-600 hover:bg-red-50"
+          >
+            <LogOut size={20} />
+            {!sidebarCollapsed && <span className="font-medium text-sm">Abmelden</span>}
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Header */}
+      <header className="lg:hidden fixed top-0 left-0 right-0 bg-white border-b border-gray-200 p-3 z-30">
+        <div className="flex items-center justify-between">
+          <h1 className="font-bold">⚡ Speeti Admin</h1>
+          <select value={activeTab} onChange={(e) => setActiveTab(e.target.value)} className="px-3 py-1.5 border rounded-lg text-sm">
+            {tabs.map(tab => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
+          </select>
+          <button
+            onClick={() => { logout(); navigate('/login'); }}
+            className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+            title="Abmelden"
+          >
+            <LogOut size={20} />
+          </button>
+        </div>
+      </header>
+
+      {/* Main */}
+      <main className="flex-1 p-4 lg:p-6 pt-16 lg:pt-6 overflow-auto">
+        <div className="max-w-6xl mx-auto">
+          {activeTab === 'dashboard' && <AdminDashboard stats={stats} orders={orders} setActiveTab={setActiveTab} setSelectedOrder={setSelectedOrder} orderStatuses={orderStatuses} />}
+          {activeTab === 'orders' && <OrdersTab />}
+          {activeTab === 'products' && productsTab}
+          {activeTab === 'categories' && <CategoriesTab />}
+          {activeTab === 'drivers' && <DriversTab />}
+          {activeTab === 'customers' && <CustomersTab />}
+          {activeTab === 'support' && <SupportTab />}
+          {activeTab === 'reviews' && <ReviewsTab />}
+          {activeTab === 'analytics' && <div className="text-center py-12 text-gray-400">📊 Statistiken kommen bald</div>}
+          {activeTab === 'settings' && <SettingsTab />}
+        </div>
+      </main>
+
+      {/* Modals */}
+      <AnimatePresence>
+        <ProductModal 
+          isOpen={showModal === 'product'}
+          onClose={() => setShowModal(null)}
+          editItem={editItem}
+          categories={categories}
+          onSave={async (data, edit) => {
+            if (edit) {
+              await api.put(`/admin/products/${edit.id}`, data);
+            } else {
+              await api.post('/admin/products', data);
+            }
+            setShowModal(null);
+            setEditItem(null);
+            loadData();
+          }}
+        />
+        {showModal === 'category' && <CategoryModal />}
+        {showModal === 'driver' && <DriverModal />}
+        {selectedOrder && <OrderDetailModal />}
+      </AnimatePresence>
+    </div>
+  );
+}

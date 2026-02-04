@@ -93,7 +93,17 @@ const paymentMethods = [
 export default function Checkout() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { cart, getCartTotal, addresses, selectedAddress, fetchAddresses, selectAddress, addAddress, createOrder, clearCart, shopStatus, fetchShopStatus } = useStore();
+  const cart = useStore(state => state.cart);
+  const getCartTotal = useStore(state => state.getCartTotal);
+  const addresses = useStore(state => state.addresses);
+  const selectedAddress = useStore(state => state.selectedAddress);
+  const fetchAddresses = useStore(state => state.fetchAddresses);
+  const selectAddress = useStore(state => state.selectAddress);
+  const addAddress = useStore(state => state.addAddress);
+  const createOrder = useStore(state => state.createOrder);
+  const clearCart = useStore(state => state.clearCart);
+  const shopStatus = useStore(state => state.shopStatus);
+  const fetchShopStatus = useStore(state => state.fetchShopStatus);
   
   const [paymentMethod, setPaymentMethod] = useState('stripe');
   const [notes, setNotes] = useState('');

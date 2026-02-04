@@ -15,7 +15,8 @@ const statusConfig = {
 };
 
 export default function Orders() {
-  const { orders, fetchOrders } = useStore();
+  const orders = useStore(state => state.orders);
+  const fetchOrders = useStore(state => state.fetchOrders);
 
   useEffect(() => {
     fetchOrders();

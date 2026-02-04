@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import { useStore, api } from '../store';
 
 export default function Support() {
-  const { user } = useStore();
+  const user = useStore(state => state.user);
   const [searchParams] = useSearchParams();
   const orderId = searchParams.get('order');
   

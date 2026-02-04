@@ -4,7 +4,7 @@ import { useStore } from '../store';
 
 export default function Navbar() {
   const location = useLocation();
-  const { user } = useStore();
+  const user = useStore(state => state.user);
   
   const isActive = (path) => location.pathname === path;
   

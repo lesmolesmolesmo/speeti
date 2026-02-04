@@ -6,7 +6,8 @@ import ProductCard from '../components/ProductCard';
 
 export default function Category() {
   const { slug } = useParams();
-  const { categories, fetchCategories } = useStore();
+  const categories = useStore(state => state.categories);
+  const fetchCategories = useStore(state => state.fetchCategories);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState('newest');

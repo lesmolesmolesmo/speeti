@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import ErrorBoundary from './components/ErrorBoundary';
 import { useEffect, lazy, Suspense } from 'react';
 import { useStore } from './store';
 
@@ -17,7 +18,29 @@ const Profile = lazy(() => import('./pages/Profile'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Driver = lazy(() => import('./pages/Driver'));
 const Support = lazy(() => import('./pages/Support'));
+const Track = lazy(() => import('./pages/Track'));
+const Review = lazy(() => import('./pages/Review'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Warehouse = lazy(() => import('./pages/Warehouse'));
+const FAQ = lazy(() => import("./pages/FAQ"));
+const Product = lazy(() => import("./pages/Product"));
+
+// Protected Route wrapper - handles auth check without conditional rendering in routes
+const ProtectedRoute = ({ children, requiredRole, redirectTo = '/login' }) => {
+  // Use selector to only subscribe to user changes, not entire store
+  const user = useStore(state => state.user);
+  const location = useLocation();
+  
+  if (!user) {
+    return <Navigate to={redirectTo + '?redirect=' + location.pathname} replace />;
+  }
+  
+  if (requiredRole && user.role !== requiredRole) {
+    return <Navigate to={redirectTo + '?redirect=' + location.pathname} replace />;
+  }
+  
+  return children;
+};
 
 // Loading fallback
 const PageLoader = () => (
@@ -33,7 +56,9 @@ import DesktopSidebar from './components/DesktopSidebar';
 import { ToastContainer } from './components/Toast';
 
 function App() {
-  const { user, token, fetchUser, fetchCategories } = useStore();
+  const user = useStore(state => state.user);
+  const fetchUser = useStore(state => state.fetchUser);
+  const fetchCategories = useStore(state => state.fetchCategories);
   const location = useLocation();
   
   // Hide nav on admin/driver/support/warehouse pages (they have their own layout)
@@ -57,23 +82,29 @@ function App() {
       </div>
 
       {/* Main Content */}
-      <main className={`flex-1 min-w-0 ${!hideNav ? 'pb-20 lg:pb-0' : ''}`}>
+      <ErrorBoundary><main className={`flex-1 min-w-0 ${!hideNav ? 'pb-20 lg:pb-0' : ''}`}>
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/category/:slug" element={<Category />} />
+          <Route path="/produkt/:slug" element={<Suspense fallback={<PageLoader />}><Product /></Suspense>} />
           <Route path="/search" element={<Search />} />
           <Route path="/cart" element={<Cart />} />
-          <Route path="/checkout" element={user ? <Checkout /> : <Navigate to="/login?redirect=/checkout" />} />
-          <Route path="/orders" element={user ? <Orders /> : <Navigate to="/login?redirect=/orders" />} />
-          <Route path="/orders/:id" element={user ? <OrderDetail /> : <Navigate to="/login" />} />
-          <Route path="/profile" element={user ? <Profile /> : <Navigate to="/login?redirect=/profile" />} />
+          <Route path="/checkout" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><Checkout /></Suspense></ProtectedRoute>} />
+          <Route path="/orders" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><Orders /></Suspense></ProtectedRoute>} />
+          <Route path="/orders/:id" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><OrderDetail /></Suspense></ProtectedRoute>} />
+          <Route path="/profile" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><Profile /></Suspense></ProtectedRoute>} />
           <Route path="/login" element={<Login />} />
-          <Route path="/admin/*" element={user?.role === 'admin' ? <Admin /> : <Navigate to="/login?redirect=/admin" />} />
-          <Route path="/driver/*" element={user?.role === 'driver' ? <Driver /> : <Navigate to="/login?redirect=/driver" />} />
-          <Route path="/warehouse" element={user?.role === 'admin' ? <Suspense fallback={<PageLoader />}><Warehouse /></Suspense> : <Navigate to="/login?redirect=/warehouse" />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/admin/*" element={<ProtectedRoute requiredRole="admin"><Suspense fallback={<PageLoader />}><Admin /></Suspense></ProtectedRoute>} />
+          <Route path="/driver/*" element={<ProtectedRoute requiredRole="driver"><Suspense fallback={<PageLoader />}><Driver /></Suspense></ProtectedRoute>} />
+          <Route path="/warehouse" element={<ProtectedRoute requiredRole="admin"><Suspense fallback={<PageLoader />}><Warehouse /></Suspense></ProtectedRoute>} />
+          <Route path="/track" element={<Track />} />
+          <Route path="/track/:orderNumber" element={<Track />} />
+          <Route path="/bewertung/:orderNumber" element={<Review />} />
+          <Route path="/faq" element={<FAQ />} />
           <Route path="/support" element={<Support />} />
         </Routes>
-      </main>
+      </main></ErrorBoundary>
       
       {/* Mobile Bottom Navigation - hidden on desktop and fullscreen pages */}
       {!hideNav && (

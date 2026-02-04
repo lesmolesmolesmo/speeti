@@ -19,7 +19,7 @@ function getDistanceKm(lat1, lon1, lat2, lon2) {
 }
 
 export default function AddressModal({ isOpen, onClose }) {
-  const { addAddress } = useStore();
+  const addAddress = useStore(state => state.addAddress);
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);

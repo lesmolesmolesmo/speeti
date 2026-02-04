@@ -5,7 +5,11 @@ import { useStore } from '../store';
 
 export default function Profile() {
   const navigate = useNavigate();
-  const { user, addresses, fetchAddresses, logout } = useStore();
+  const user = useStore(state => state.user);
+  const addresses = useStore(state => state.addresses);
+  const fetchAddresses = useStore(state => state.fetchAddresses);
+  const logout = useStore(state => state.logout);
+  const _hasHydrated = useStore(state => state._hasHydrated);
   const [loading, setLoading] = useState(true);
   const [orderCount, setOrderCount] = useState(0);
 
@@ -43,6 +47,7 @@ export default function Profile() {
   }
 
   // Not logged in
+  if (!_hasHydrated) return <div className='min-h-screen flex items-center justify-center'><div className='w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin'></div></div>;
   if (!user) {
     return null;
   }

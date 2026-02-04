@@ -11,12 +11,26 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Handle API errors gracefully - prevent white screen crashes
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem("speeti-token");
+      window.location.href = "/login";
+    }
+    console.error("API Error:", error.response?.data || error.message);
+    return Promise.reject(error);
+  }
+);
+
 export const useStore = create(
   persist(
     (set, get) => ({
       // Auth - user wird jetzt auch persistiert!
       user: null,
       token: null,
+      _hasHydrated: true,
       
       setToken: (token) => {
         localStorage.setItem('speeti-token', token);
@@ -53,8 +67,8 @@ export const useStore = create(
           set({ user: data });
           return data;
         } catch (e) {
-          // Token ungültig - logout
-          get().logout();
+          // Nur bei 401 (Token ungültig) ausloggen
+          if (e.response?.status === 401) { get().logout(); }
           return null;
         }
       },
@@ -96,6 +110,11 @@ export const useStore = create(
       
       getCartTotal: () => {
         return get().cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      },
+      
+      // Pfand (Deposit) berechnen
+      getCartDeposit: () => {
+        return get().cart.reduce((sum, item) => sum + (item.deposit || 0) * item.quantity, 0);
       },
       
       getCartCount: () => {
@@ -218,7 +237,10 @@ export const useStore = create(
         token: state.token,
         user: state.user,
         favorites: state.favorites
-      })
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        // Will be set via the persist API after this
+      }
     }
   )
 );

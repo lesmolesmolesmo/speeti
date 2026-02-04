@@ -13,7 +13,10 @@ const navItems = [
 
 export default function DesktopSidebar() {
   const location = useLocation();
-  const { user, categories, cart, logout } = useStore();
+  const user = useStore(state => state.user);
+  const categories = useStore(state => state.categories);
+  const cart = useStore(state => state.cart);
+  const logout = useStore(state => state.logout);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const [showAllCategories, setShowAllCategories] = useState(false);
   

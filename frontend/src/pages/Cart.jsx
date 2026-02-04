@@ -4,7 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useStore } from '../store';
 
 export default function Cart() {
-  const { cart, addToCart, removeFromCart, clearCart } = useStore();
+  const cart = useStore(state => state.cart);
+  const addToCart = useStore(state => state.addToCart);
+  const removeFromCart = useStore(state => state.removeFromCart);
+  const clearCart = useStore(state => state.clearCart);
   
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const deliveryFee = subtotal >= 20 ? 0 : 2.99;

@@ -10,11 +10,37 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { generateInvoice, generateInvoiceNumber } = require('./invoice-generator');
 const emailService = require('./email-service');
-// Helper function to send order emails
+const sharp = require("sharp");
+const crypto = require("crypto");
+const rateLimit = require('express-rate-limit');
+
+// Rate limiters
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // 200 requests per window
+  message: { error: 'Zu viele Anfragen. Bitte warte einen Moment.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 login/register attempts
+  message: { error: 'Zu viele Anmeldeversuche. Bitte warte 15 Minuten.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const strictLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5, // 5 requests per minute for sensitive endpoints
+  message: { error: 'Rate limit erreicht. Bitte warte.' },
+});
+// Helper function to send order emails (Resend)
 async function sendOrderEmails(orderId, status) {
   try {
     const order = db.prepare(`
-      SELECT o.*, u.email, u.name as customer_name, 
+      SELECT o.*, o.order_number, o.track_token, u.email, u.name as customer_name, 
              a.street, a.house_number, a.postal_code, a.city
       FROM orders o
       JOIN users u ON o.user_id = u.id
@@ -22,7 +48,10 @@ async function sendOrderEmails(orderId, status) {
       WHERE o.id = ?
     `).get(orderId);
     
-    if (!order || !order.email) return;
+    if (!order || !order.email) {
+      console.log('⚠️ No email for order', orderId);
+      return;
+    }
     
     const items = db.prepare(`
       SELECT oi.*, p.name, p.image FROM order_items oi
@@ -30,30 +59,38 @@ async function sendOrderEmails(orderId, status) {
       WHERE oi.order_id = ?
     `).all(orderId);
     
-    let subject, html;
-    if (status === 'confirmed') {
-      subject = `Bestellung #${orderId} bestätigt! 🎉`;
-      html = emailService.orderConfirmationEmail(order, items);
-    } else if (['preparing', 'picking', 'delivering', 'delivered'].includes(status)) {
-      const titles = {
-        preparing: 'Wird vorbereitet 👨‍🍳',
-        picking: 'Wird gepackt 📦',
-        delivering: 'Unterwegs zu dir! 🛵',
-        delivered: 'Geliefert! 🎉'
-      };
-      subject = `Bestellung #${orderId}: ${titles[status]}`;
-      html = emailService.deliveryStatusEmail(order, status);
-    }
+    const orderData = {
+      order_number: order.order_number || ('SPT-' + orderId),
+      track_token: order.track_token,
+      total: order.total,
+      address: `${order.street} ${order.house_number}, ${order.postal_code} ${order.city}`
+    };
     
-    if (subject && html) {
-      emailService.sendEmail(order.email, subject, html);
+    const customer = { email: order.email, name: order.customer_name };
+    
+    // Map internal statuses to email statuses
+    const emailStatus = {
+      'confirmed': 'confirmed',
+      'picking': 'preparing',
+      'picked': 'preparing', 
+      'delivering': 'delivering',
+      'delivered': 'delivered'
+    };
+    
+    if (status === 'confirmed') {
+      await emailService.sendOrderConfirmation(orderData, customer, items);
+      console.log('📧 Order confirmation sent to:', order.email);
+    } else if (emailStatus[status]) {
+      await emailService.sendStatusUpdate(orderData, customer, emailStatus[status]);
+      console.log('📧 Status update (' + status + ') sent to:', order.email);
     }
   } catch (e) {
-    console.error('Email error:', e);
+    console.error('❌ Email error:', e.message);
   }
 }
 
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' }
@@ -344,17 +381,34 @@ try {
 } catch(e) {}
 try {
   db.exec(`ALTER TABLE orders ADD COLUMN stripe_session_id TEXT`);
+try { db.exec(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME`); } catch (e) {}
+try { db.exec(`ALTER TABLE orders ADD COLUMN cancel_reason TEXT`); } catch (e) {}
 } catch(e) {}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'speeti-secret-key-2024';
+
+// Generate order details
+function generateOrderDetails() {
+  const crypto = require("crypto");
+  // Get next order ID for sequential numbering
+  const maxRow = db.prepare("SELECT MAX(id) as maxId FROM orders").get();
+  const nextId = (maxRow?.maxId || 0) + 1;
+  const orderNumber = "SPT-" + String(nextId).padStart(5, '0');
+  const trackToken = crypto.randomBytes(16).toString("hex");
+  return { orderNumber, trackToken };
+}
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['https://speeti.de', 'http://localhost:5173', 'http://localhost:3000'],
+  credentials: true
+}));
 app.use(express.json());
+app.use('/api', generalLimiter);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Serve frontend in production
@@ -389,22 +443,27 @@ const auth = (roles = []) => (req, res, next) => {
 
 // ============ AUTH ROUTES ============
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { email, password, name, phone } = req.body;
+  
+  // Password validation
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen haben' });
+  }
   
   try {
     const hash = await bcrypt.hash(password, 10);
     const stmt = db.prepare('INSERT INTO users (email, password, name, phone) VALUES (?, ?, ?, ?)');
     const result = stmt.run(email, hash, name, phone || null);
     
-    const token = jwt.sign({ id: result.lastInsertRowid, email, name, role: 'customer' }, JWT_SECRET);
+    const token = jwt.sign({ id: result.lastInsertRowid, email, name, role: 'customer' }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: result.lastInsertRowid, email, name, role: 'customer' } });
   } catch (e) {
     res.status(400).json({ error: 'Email bereits registriert' });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
@@ -413,7 +472,7 @@ app.post('/api/auth/login', async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(401).json({ error: 'Ungültige Anmeldedaten' });
   
-  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, JWT_SECRET);
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, phone: user.phone } });
 });
 
@@ -421,6 +480,98 @@ app.get('/api/auth/me', auth(), (req, res) => {
   const user = db.prepare('SELECT id, email, name, phone, role, avatar FROM users WHERE id = ?').get(req.user.id);
   res.json(user);
 });
+
+// ============ PASSWORD RESET ============
+
+// Request password reset
+app.post('/api/auth/forgot-password', strictLimiter, async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'E-Mail erforderlich' });
+  }
+  
+  // Always return success (don't reveal if email exists)
+  res.json({ success: true, message: 'Falls ein Konto mit dieser E-Mail existiert, erhältst du einen Link zum Zurücksetzen.' });
+  
+  try {
+    const user = db.prepare('SELECT id, name, email FROM users WHERE email = ?').get(email.toLowerCase());
+    if (!user) return;
+    
+    // Generate reset token (valid 1 hour)
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = Date.now() + 3600000; // 1 hour
+    
+    // Store token
+    db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id);
+    
+    // Send email
+    const resetUrl = 'https://speeti.de/reset-password?token=' + token;
+    await emailService.sendEmail(
+      user.email,
+      '🔐 Passwort zurücksetzen',
+      emailService.emailTemplate(`
+        <div style="text-align:center;padding:24px 0;">
+          <div style="font-size:64px;margin-bottom:16px;">🔐</div>
+          <h1 style="color:#1f2937;margin:0 0 8px 0;">Passwort zurücksetzen</h1>
+          <p style="color:#6b7280;margin:0;">Du hast angefordert, dein Passwort zurückzusetzen.</p>
+        </div>
+        <p style="color:#374151;">Hallo <strong>${user.name || 'du'}</strong>!</p>
+        <p style="color:#374151;">Klicke auf den Button um ein neues Passwort zu wählen:</p>
+        <div style="text-align:center;margin:30px 0;">
+          <a href="${resetUrl}" class="button">Neues Passwort setzen</a>
+        </div>
+        <div class="info-box">
+          <p style="margin:0;color:#6b7280;font-size:14px;">⏱️ Dieser Link ist <strong>1 Stunde</strong> gültig.</p>
+          <p style="margin:8px 0 0 0;color:#6b7280;font-size:14px;">Falls du das nicht warst, ignoriere diese E-Mail einfach.</p>
+        </div>
+      `, 'Setze dein Passwort zurück')
+    );
+    console.log('📧 Password reset email sent to:', user.email);
+  } catch (e) {
+    console.error('Password reset error:', e);
+  }
+});
+
+// Reset password with token
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, password } = req.body;
+  
+  if (!token || !password) {
+    return res.status(400).json({ error: 'Token und Passwort erforderlich' });
+  }
+  
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
+  }
+  
+  try {
+    const user = db.prepare('SELECT id, email, reset_expires FROM users WHERE reset_token = ?').get(token);
+    
+    if (!user) {
+      return res.status(400).json({ error: 'Ungültiger oder abgelaufener Link' });
+    }
+    
+    if (Date.now() > user.reset_expires) {
+      return res.status(400).json({ error: 'Link ist abgelaufen. Bitte fordere einen neuen an.' });
+    }
+    
+    // Hash new password
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Update password and clear token
+    db.prepare('UPDATE users SET password = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?').run(hashedPassword, user.id);
+    
+    console.log('🔐 Password reset successful for:', user.email);
+    res.json({ success: true, message: 'Passwort erfolgreich geändert! Du kannst dich jetzt einloggen.' });
+  } catch (e) {
+    console.error('Reset password error:', e);
+    res.status(500).json({ error: 'Fehler beim Zurücksetzen' });
+  }
+});
+
 
 // ============ CATEGORIES ============
 
@@ -456,8 +607,8 @@ app.get('/api/products', (req, res) => {
   const params = [];
   
   if (category) {
-    sql += ' AND c.slug = ?';
-    params.push(category);
+    sql += ' AND (c.slug = ? OR c.id = ?)';
+    params.push(category, category);
   }
   if (search) {
     sql += ' AND p.name LIKE ?';
@@ -479,20 +630,52 @@ app.get('/api/products/:id', (req, res) => {
 });
 
 app.post('/api/admin/products', auth(['admin']), (req, res) => {
-  const { category_id, name, description, price, original_price, image, unit, unit_amount, stock_count, featured } = req.body;
-  const stmt = db.prepare(`INSERT INTO products (category_id, name, description, price, original_price, image, unit, unit_amount, stock_count, featured) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const result = stmt.run(category_id, name, description || null, price, original_price || null, image || null, unit || 'Stück', unit_amount || '1', stock_count || 100, featured ? 1 : 0);
+  const fields = ['category_id', 'name', 'description', 'price', 'original_price', 'image', 'unit', 'unit_amount', 
+    'stock_count', 'featured', 'ingredients', 'nutrition_calories', 'nutrition_fat', 'nutrition_carbs', 
+    'nutrition_protein', 'nutrition_sugar', 'nutrition_salt', 'nutrition_fiber', 'allergens', 'origin', 
+    'brand', 'ean', 'tax_rate', 'sku', 'weight', 'weight_unit', 'min_order', 'max_order', 'deposit', 
+    'storage_temp', 'nutrition_info', 'visible', 'in_stock', 'sort_order'];
+  
+  const cols = fields.filter(f => req.body[f] !== undefined);
+  const vals = cols.map(f => {
+    const v = req.body[f];
+    if (f === 'featured' || f === 'in_stock' || f === 'visible') return v ? 1 : 0;
+    return v || null;
+  });
+  
+  const sql = `INSERT INTO products (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
+  const result = db.prepare(sql).run(...vals);
   res.json({ id: result.lastInsertRowid, ...req.body });
 });
 
 app.put('/api/admin/products/:id', auth(['admin']), (req, res) => {
-  const { category_id, name, description, price, original_price, image, unit, unit_amount, in_stock, stock_count, featured, sort_order } = req.body;
-  db.prepare(`UPDATE products SET category_id=?, name=?, description=?, price=?, original_price=?, image=?, unit=?, unit_amount=?, in_stock=?, stock_count=?, featured=?, sort_order=? WHERE id=?`)
-    .run(category_id, name, description, price, original_price, image, unit, unit_amount, in_stock ? 1 : 0, stock_count, featured ? 1 : 0, sort_order || 0, req.params.id);
+  const fields = ['category_id', 'name', 'description', 'price', 'original_price', 'image', 'unit', 'unit_amount', 
+    'stock_count', 'featured', 'ingredients', 'nutrition_calories', 'nutrition_fat', 'nutrition_carbs', 
+    'nutrition_protein', 'nutrition_sugar', 'nutrition_salt', 'nutrition_fiber', 'allergens', 'origin', 
+    'brand', 'ean', 'tax_rate', 'sku', 'weight', 'weight_unit', 'min_order', 'max_order', 'deposit', 
+    'storage_temp', 'nutrition_info', 'visible', 'in_stock', 'sort_order'];
+  
+  const updates = [];
+  const vals = [];
+  
+  fields.forEach(f => {
+    if (req.body[f] !== undefined) {
+      updates.push(`${f} = ?`);
+      const v = req.body[f];
+      if (f === 'featured' || f === 'in_stock' || f === 'visible') {
+        vals.push(v ? 1 : 0);
+      } else {
+        vals.push(v === '' ? null : v);
+      }
+    }
+  });
+  
+  if (updates.length > 0) {
+    vals.push(req.params.id);
+    db.prepare(`UPDATE products SET ${updates.join(', ')} WHERE id = ?`).run(...vals);
+  }
   res.json({ success: true });
 });
-
 app.delete('/api/admin/products/:id', auth(['admin']), (req, res) => {
   db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
   res.json({ success: true });
@@ -506,14 +689,38 @@ app.get('/api/addresses', auth(), (req, res) => {
 });
 
 app.post('/api/addresses', auth(), (req, res) => {
-  const { label, street, house_number, postal_code, city, instructions, is_default, lat, lng } = req.body;
+  const { 
+    label, street, house_number, postal_code, city, instructions, is_default, lat, lng,
+    address_type, doorbell_name, entrance, floor, has_elevator 
+  } = req.body;
   
   if (is_default) {
     db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(req.user.id);
   }
   
-  const stmt = db.prepare('INSERT INTO addresses (user_id, label, street, house_number, postal_code, city, instructions, is_default, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const result = stmt.run(req.user.id, label || 'Zuhause', street, house_number, postal_code, city || 'Münster', instructions || null, is_default ? 1 : 0, lat || null, lng || null);
+  const stmt = db.prepare(`
+    INSERT INTO addresses (
+      user_id, label, street, house_number, postal_code, city, instructions, is_default, lat, lng,
+      address_type, doorbell_name, entrance, floor, has_elevator
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    req.user.id, 
+    label || 'Zuhause', 
+    street, 
+    house_number, 
+    postal_code, 
+    city || 'Münster', 
+    instructions || null, 
+    is_default ? 1 : 0, 
+    lat || null, 
+    lng || null,
+    address_type || 'wohnung',
+    doorbell_name || null,
+    entrance || null,
+    floor || null,
+    has_elevator ? 1 : 0
+  );
   res.json({ id: result.lastInsertRowid, ...req.body });
 });
 
@@ -535,7 +742,7 @@ app.get('/api/orders', auth(), (req, res) => {
            JOIN users u ON o.user_id = u.id 
            JOIN addresses a ON o.address_id = a.id
            LEFT JOIN users d ON o.driver_id = d.id
-           ORDER BY o.created_at DESC`;
+           ORDER BY CASE o.status WHEN 'pending' THEN 1 WHEN 'confirmed' THEN 2 WHEN 'picking' THEN 3 WHEN 'delivering' THEN 4 WHEN 'delivered' THEN 5 WHEN 'cancelled' THEN 6 END, o.created_at DESC`;
     params = [];
   } else if (req.user.role === 'driver') {
     sql = `SELECT o.*, u.name as customer_name, u.phone as customer_phone,
@@ -554,7 +761,7 @@ app.get('/api/orders', auth(), (req, res) => {
            d.name as driver_name, d.phone as driver_phone
            FROM orders o JOIN addresses a ON o.address_id = a.id
            LEFT JOIN users d ON o.driver_id = d.id
-           WHERE o.user_id = ? ORDER BY o.created_at DESC`;
+           WHERE o.user_id = ? ORDER BY CASE o.status WHEN 'pending' THEN 1 WHEN 'confirmed' THEN 2 WHEN 'picking' THEN 3 WHEN 'delivering' THEN 4 WHEN 'delivered' THEN 5 WHEN 'cancelled' THEN 6 END, o.created_at DESC`;
     params = [req.user.id];
   }
   
@@ -605,7 +812,9 @@ app.get('/api/orders/:id', auth(), (req, res) => {
   res.json(order);
 });
 
-app.post('/api/orders', auth(), (req, res) => {
+app.post("/api/orders", auth(), (req, res) => {
+  console.log("📦 Order request:", JSON.stringify(req.body));
+  try {
   const { address_id, items, payment_method, notes, scheduled_time } = req.body;
   
   let subtotal = 0;
@@ -621,8 +830,9 @@ app.post('/api/orders', auth(), (req, res) => {
   const total = subtotal + delivery_fee;
   const estimated = scheduled_time ? scheduled_time : new Date(Date.now() + 20 * 60000).toISOString();
   
-  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery, scheduled_time) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)`);
-  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated, scheduled_time || null);
+  const { orderNumber, trackToken } = generateOrderDetails();
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, order_number, track_token, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery, scheduled_time) VALUES (?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)`);
+  const orderResult = orderStmt.run(req.user.id, address_id, orderNumber, trackToken, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated, scheduled_time || null);
   const orderId = orderResult.lastInsertRowid;
   
   const itemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
@@ -635,6 +845,10 @@ app.post('/api/orders', auth(), (req, res) => {
   sendOrderEmails(orderId, 'confirmed');
   
   res.json({ id: orderId, total, estimated_delivery: estimated });
+  } catch (e) {
+    console.error("Order error:", e);
+    res.status(500).json({ error: "Fehler bei der Bestellung", details: e.message });
+  }
 });
 
 app.patch('/api/orders/:id/status', auth(['admin', 'driver']), (req, res) => {
@@ -681,9 +895,109 @@ app.patch('/api/orders/:id/items/:itemId/pick', auth(['driver']), (req, res) => 
   res.json({ success: true });
 });
 
+
+// ============ ORDER CANCELLATION ============
+
+// Customer can cancel before picking starts
+app.post('/api/orders/:orderNumber/cancel', (req, res) => {
+  const { token, email, reason } = req.body;
+  const orderNumber = req.params.orderNumber;
+  
+  try {
+    // Find order
+    const order = db.prepare(`
+      SELECT o.id, o.order_number, o.track_token, o.status, o.total,
+             u.email as customer_email, u.name as customer_name
+      FROM orders o
+      LEFT JOIN users u ON o.user_id = u.id
+      WHERE o.order_number = ? OR o.id = ?
+    `).get(orderNumber, orderNumber);
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+    }
+    
+    // Verify authorization (token OR email)
+    const isValidToken = token && order.track_token && token === order.track_token;
+    const isValidEmail = email && order.customer_email && 
+                         email.toLowerCase() === order.customer_email.toLowerCase();
+    
+    if (!isValidToken && !isValidEmail) {
+      return res.status(403).json({ error: 'Nicht autorisiert' });
+    }
+    
+    // Check if cancellation is still allowed
+    const cancellableStatuses = ['pending', 'confirmed'];
+    if (!cancellableStatuses.includes(order.status)) {
+      // Provide status-specific message
+      let statusMessage = 'Deine Bestellung wird bereits bearbeitet.';
+      if (order.status === 'picking' || order.status === 'picked') {
+        statusMessage = 'Deine Bestellung wird gerade von unserem Team zusammengestellt.';
+      } else if (order.status === 'delivering') {
+        statusMessage = 'Dein Fahrer ist bereits unterwegs zu dir!';
+      }
+      
+      return res.status(400).json({ 
+        error: 'Online-Stornierung nicht mehr möglich',
+        message: statusMessage,
+        supportNeeded: true,
+        currentStatus: order.status
+      });
+    }
+    
+    // Cancel the order
+    db.prepare(`
+      UPDATE orders SET status = 'cancelled', cancelled_at = datetime('now'), cancel_reason = ?
+      WHERE id = ?
+    `).run(reason || 'Vom Kunden storniert', order.id);
+    
+    // Notify via Socket.io
+    io.emit('order-cancelled', { orderId: order.id, orderNumber: order.order_number });
+    
+    // Send confirmation email
+    if (order.customer_email && emailService) {
+      const content = `
+        <div style="text-align:center;padding:24px 0;">
+          <div style="font-size:64px;margin-bottom:16px;">❌</div>
+          <h1 style="color:#1f2937;margin:0 0 8px 0;">Bestellung storniert</h1>
+          <p style="color:#6b7280;margin:0;">Deine Bestellung ${order.order_number || 'SPEETI-' + String(order.id).padStart(5, '0')} wurde erfolgreich storniert.</p>
+        </div>
+        <div class="info-box">
+          <p style="margin:0;color:#6b7280;">
+            Falls du per Karte bezahlt hast, wird der Betrag von <strong>${order.total?.toFixed(2)} €</strong> 
+            innerhalb von 5-10 Werktagen zurückerstattet.
+          </p>
+        </div>
+        <div style="text-align:center;margin-top:24px;">
+          <p style="color:#1f2937;margin-bottom:16px;">Wir hoffen, dich bald wieder zu sehen! 💕</p>
+          <a href="https://speeti.de" class="button">Weiter shoppen</a>
+        </div>
+      `;
+      emailService.sendEmail(
+        order.customer_email, 
+        'Bestellung storniert ❌', 
+        emailService.emailTemplate(content, 'Deine Bestellung wurde storniert')
+      );
+    }
+    
+    console.log('📦 Order cancelled:', order.order_number, 'by customer');
+    
+    res.json({ 
+      success: true, 
+      message: 'Bestellung erfolgreich storniert',
+      refundInfo: 'Falls du per Karte bezahlt hast, wird der Betrag in 5-10 Werktagen zurückerstattet.'
+    });
+    
+  } catch (e) {
+    console.error('Cancel error:', e);
+    res.status(500).json({ error: 'Fehler beim Stornieren' });
+  }
+});
+
 // ============ ORDER CHAT (Driver <-> Customer) ============
 
 app.post('/api/orders/:id/messages', auth(), (req, res) => {
+  console.log("📦 Order request:", JSON.stringify(req.body));
   const { message } = req.body;
   const stmt = db.prepare('INSERT INTO messages (order_id, sender_id, message) VALUES (?, ?, ?)');
   const result = stmt.run(req.params.id, req.user.id, message);
@@ -813,7 +1127,13 @@ app.post('/api/support/ticket', auth(), async (req, res) => {
     SELECT * FROM support_messages WHERE ticket_id = ? ORDER BY created_at
   `).all(ticket.id);
   
-  res.json({ ticket, messages });
+  res.json({ 
+    ticket: {
+      ...ticket,
+      humanTakeover: !!ticket.human_takeover
+    }, 
+    messages 
+  });
 });
 
 // Send message to support (AI responds)
@@ -828,12 +1148,18 @@ app.post('/api/support/message', auth(), async (req, res) => {
   db.prepare('INSERT INTO support_messages (ticket_id, sender_type, sender_id, message) VALUES (?, ?, ?, ?)')
     .run(ticket_id, 'user', req.user.id, message);
   
-  // If already escalated, notify admin
-  if (ticket.escalated) {
-    io.emit('support-message', { ticket_id, sender: 'user', message });
+  // If human has taken over OR escalated, don't use AI - notify admin instead
+  if (ticket.human_takeover || ticket.escalated) {
+    io.emit('support-message', { ticket_id, sender: 'user', message, userName: req.user.name });
+    
+    const waitingMsg = ticket.human_takeover 
+      ? '👋 Ein Mitarbeiter wird dir gleich antworten. Bitte hab einen Moment Geduld!'
+      : 'Deine Nachricht wurde an unser Support-Team weitergeleitet. Wir melden uns schnellstmöglich bei dir.';
+    
     return res.json({ 
-      response: 'Deine Nachricht wurde an unser Support-Team weitergeleitet. Wir melden uns schnellstmöglich bei dir.',
-      escalated: true 
+      response: waitingMsg,
+      escalated: true,
+      humanTakeover: !!ticket.human_takeover
     });
   }
   
@@ -972,13 +1298,19 @@ app.post('/api/support/message', auth(), async (req, res) => {
   res.json({ response: aiResponse, escalated: shouldEscalate });
 });
 
-// Get all support tickets (admin)
+// Get all support tickets (admin) - includes closed tickets filter
 app.get('/api/admin/support', auth(['admin']), (req, res) => {
+  const { includeClosed } = req.query;
+  
+  let whereClause = '';
+  
   const tickets = db.prepare(`
     SELECT t.*, u.name as user_name, u.email as user_email,
-           (SELECT COUNT(*) FROM support_messages WHERE ticket_id = t.id AND sender_type = 'user') as message_count
+           (SELECT COUNT(*) FROM support_messages WHERE ticket_id = t.id AND sender_type = 'user') as message_count,
+           (SELECT message FROM support_messages WHERE ticket_id = t.id ORDER BY created_at DESC LIMIT 1) as last_message
     FROM support_tickets t
     JOIN users u ON t.user_id = u.id
+    ${whereClause}
     ORDER BY t.escalated DESC, t.created_at DESC
   `).all();
   res.json(tickets);
@@ -1013,16 +1345,43 @@ app.post('/api/admin/support/:id/reply', auth(['admin']), (req, res) => {
 });
 
 // Close ticket
-app.patch('/api/admin/support/:id/close', auth(['admin']), (req, res) => {
-  db.prepare('UPDATE support_tickets SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?')
+app.post('/api/admin/support/:id/close', auth(['admin']), (req, res) => {
+  db.prepare('UPDATE support_tickets SET status = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?')
     .run('closed', req.params.id);
   res.json({ success: true });
+});
+
+// Admin: Toggle human takeover for a ticket
+app.post("/api/admin/support/:id/takeover", auth(["admin"]), (req, res) => {
+  const { takeover } = req.body;
+  const ticketId = req.params.id;
+  
+  try {
+    db.prepare("UPDATE support_tickets SET human_takeover = ? WHERE id = ?")
+      .run(takeover ? 1 : 0, ticketId);
+    
+    const ticket = db.prepare("SELECT * FROM support_tickets WHERE id = ?").get(ticketId);
+    
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket nicht gefunden" });
+    }
+    
+    res.json({ 
+      success: true, 
+      human_takeover: !!ticket.human_takeover,
+      message: takeover ? "Du hast das Ticket übernommen" : "KI antwortet wieder"
+    });
+  } catch (e) {
+    console.error("Takeover error:", e);
+    res.status(500).json({ error: "Fehler beim Übernehmen" });
+  }
 });
 
 // ============ STRIPE PAYMENTS ============
 
 // Create checkout session
 app.post('/api/checkout/create-session', auth(), async (req, res) => {
+  console.log("💳 Stripe checkout request:", JSON.stringify(req.body));
   if (!STRIPE_SECRET_KEY) {
     return res.status(500).json({ error: 'Stripe nicht konfiguriert' });
   }
@@ -1044,7 +1403,7 @@ app.post('/api/checkout/create-session', auth(), async (req, res) => {
           currency: 'eur',
           product_data: {
             name: product.name,
-            images: product.image ? [product.image] : []
+            images: product.image && product.image.startsWith('http') ? [product.image] : []
           },
           unit_amount: Math.round(product.price * 100)
         },
@@ -1067,8 +1426,9 @@ app.post('/api/checkout/create-session', auth(), async (req, res) => {
   
   // Create pending order with optional scheduled time
   const estimated = scheduled_time ? scheduled_time : new Date(Date.now() + 20 * 60000).toISOString();
-  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, payment_status, notes, estimated_delivery, scheduled_time) VALUES (?, ?, 'pending', ?, 2.99, ?, 'stripe', 'pending', ?, ?, ?)`);
-  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, total, notes || null, estimated, scheduled_time || null);
+  const { orderNumber: stripeOrderNum, trackToken: stripeTrackToken } = generateOrderDetails();
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, order_number, track_token, status, subtotal, delivery_fee, total, payment_method, payment_status, notes, estimated_delivery, scheduled_time) VALUES (?, ?, ?, ?, 'pending', ?, 2.99, ?, 'stripe', 'pending', ?, ?, ?)`);
+  const orderResult = orderStmt.run(req.user.id, address_id, stripeOrderNum, stripeTrackToken, subtotal, total, notes || null, estimated, scheduled_time || null);
   const orderId = orderResult.lastInsertRowid;
   
   // Insert items
@@ -1082,11 +1442,11 @@ app.post('/api/checkout/create-session', auth(), async (req, res) => {
     const stripe = require('stripe')(STRIPE_SECRET_KEY);
     
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'klarna', 'sofort', 'paypal'],
+      payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
-      success_url: `${req.headers.origin}/orders/${orderId}?success=true`,
-      cancel_url: `${req.headers.origin}/checkout?cancelled=true`,
+      success_url: `https://speeti.de/orders/${orderId}?success=true`,
+      cancel_url: `https://speeti.de/checkout?cancelled=true`,
       metadata: { order_id: orderId.toString() },
       payment_intent_data: {
         metadata: { order_id: orderId.toString() }
@@ -1222,6 +1582,7 @@ app.put('/api/admin/business', auth(['admin']), (req, res) => {
 
 // Generate invoice for an order
 app.post('/api/orders/:id/invoice', auth(), async (req, res) => {
+  console.log("📦 Order request:", JSON.stringify(req.body));
   const orderId = parseInt(req.params.id);
   
   // Check if invoice already exists
@@ -1599,6 +1960,7 @@ app.delete('/api/admin/promo/:id', auth(['admin']), (req, res) => {
 
 // Submit rating for an order
 app.post('/api/orders/:id/rating', auth(), (req, res) => {
+  console.log("📦 Order request:", JSON.stringify(req.body));
   const { rating, comment } = req.body;
   const orderId = parseInt(req.params.id);
   
@@ -2113,8 +2475,8 @@ app.post('/api/inventory/:id/link-product', auth(['admin']), (req, res) => {
   }
 });
 
-// ============ IMAGE UPLOAD ============
 
+// ============ IMAGE UPLOAD ============
 const multer = require('multer');
 
 // Ensure uploads directory exists
@@ -2123,33 +2485,37 @@ const productsDir = path.join(uploadsDir, 'products');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(productsDir)) fs.mkdirSync(productsDir, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, productsDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `product-${Date.now()}-${Math.random().toString(36).substr(2, 9)}${ext}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+// Use memory storage for image processing
+const uploadMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = /jpeg|jpg|png|gif|webp/;
-    const extOk = allowed.test(path.extname(file.originalname).toLowerCase());
-    const mimeOk = allowed.test(file.mimetype);
-    cb(null, extOk && mimeOk);
+    const mimeOk = /image\//.test(file.mimetype);
+    cb(null, mimeOk);
   }
 });
 
-// Upload product image
-app.post('/api/upload/product', auth(['admin']), upload.single('image'), (req, res) => {
+// Upload product image with automatic optimization
+app.post('/api/upload/product', auth(['admin']), uploadMemory.single('image'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Keine Datei hochgeladen' });
   }
   
-  const imageUrl = `/uploads/products/${req.file.filename}`;
-  res.json({ url: imageUrl });
+  try {
+    const filename = `product-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.jpg`;
+    const outputPath = path.join(productsDir, filename);
+    
+    await sharp(req.file.buffer)
+      .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85, progressive: true })
+      .toFile(outputPath);
+    
+    console.log('📸 Image optimized:', req.file.originalname, '->', filename);
+    res.json({ url: `/uploads/products/${filename}` });
+  } catch (err) {
+    console.error('Image processing error:', err);
+    res.status(500).json({ error: 'Bildverarbeitung fehlgeschlagen' });
+  }
 });
 
 // Update product image
@@ -2331,10 +2697,479 @@ app.get('/api/admin/waitlist', auth(['admin']), (req, res) => {
   res.json(waitlist);
 });
 
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+
+// ================================================
+
+// ================================================
+// SHOP SETTINGS (Mindestbestellwert, Liefergebühren)
+// ================================================
+
+// Initialize shop_settings table (better-sqlite3 syntax)
+db.exec(`CREATE TABLE IF NOT EXISTS shop_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+// Default settings
+const defaultSettings = {
+  min_order_value: '15.00',
+  delivery_fee: '2.99',
+  free_delivery_threshold: '30.00',
+  delivery_radius_km: '5'
+};
+
+const insertSettingStmt = db.prepare('INSERT OR IGNORE INTO shop_settings (key, value) VALUES (?, ?)');
+Object.entries(defaultSettings).forEach(([key, value]) => {
+  insertSettingStmt.run(key, value);
 });
 
+// Get shop settings (public)
+app.get('/api/shop/settings', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT key, value FROM shop_settings').all();
+    const settings = {};
+    rows.forEach(row => settings[row.key] = row.value);
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================
+// ORDER TRACKING (Public)
+// ================================================
+
+app.get('/api/track/:orderNumber', (req, res) => {
+  try {
+    const rawInput = req.params.orderNumber.trim();
+    const numOnly = rawInput.replace(/^(SPT-|SPEETI-)/i, '').replace(/^0+/, '');
+    const paddedNum = numOnly.padStart(5, '0');
+    const sptFormat = 'SPT-' + paddedNum;
+    const { token, email } = req.query;
+    
+    const order = db.prepare(`
+      SELECT 
+        o.id, o.order_number, o.track_token, o.status, o.total, o.delivery_fee, 
+        o.created_at, o.scheduled_time,
+        a.street, a.house_number, a.postal_code as plz, a.city,
+        u.name as customer_name, u.email as customer_email
+      FROM orders o
+      LEFT JOIN users u ON o.user_id = u.id
+      LEFT JOIN addresses a ON o.address_id = a.id
+      WHERE o.id = ? OR o.order_number = ? OR o.order_number = ? OR o.order_number LIKE ?
+      LIMIT 1
+    `).get(numOnly, rawInput, sptFormat, '%' + numOnly);
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+    }
+    
+    // Security: require token OR matching email
+    const isValidToken = token && order.track_token && token === order.track_token;
+    const isValidEmail = email && order.customer_email && 
+                         email.toLowerCase() === order.customer_email.toLowerCase();
+    
+    if (!isValidToken && !isValidEmail) {
+      return res.json({
+        orderNumber: order.order_number,
+        requiresVerification: true,
+        message: 'Bitte gib deine E-Mail-Adresse ein, um die Bestellung zu verifizieren.'
+      });
+    }
+    
+    const items = db.prepare(`
+      SELECT oi.quantity, oi.price, p.name, p.image
+      FROM order_items oi
+      LEFT JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = ?
+    `).all(order.id);
+    
+    const statusTimeline = {
+      pending: { step: 1, label: 'Bestellung eingegangen', icon: '📋' },
+      confirmed: { step: 2, label: 'Bestellung bestätigt', icon: '✅' },
+      preparing: { step: 3, label: 'Wird vorbereitet', icon: '👨🍳' },
+      ready: { step: 4, label: 'Bereit zur Auslieferung', icon: '📦' },
+      delivering: { step: 5, label: 'Auf dem Weg', icon: '🚴' },
+      delivered: { step: 6, label: 'Geliefert', icon: '🎉' },
+      cancelled: { step: 0, label: 'Storniert', icon: '❌' }
+    };
+    
+    const currentStatus = statusTimeline[order.status] || statusTimeline.pending;
+    
+    res.json({
+      verified: true,
+      orderNumber: order.order_number,
+      status: order.status,
+      statusInfo: currentStatus,
+      total: order.total,
+      deliveryFee: order.delivery_fee,
+      address: { street: order.street, houseNumber: order.house_number, plz: order.plz, city: order.city },
+      customerName: order.customer_name?.split(' ')[0] || 'Kunde',
+      items,
+      createdAt: order.created_at,
+      scheduledTime: order.scheduled_time,
+      timeline: Object.entries(statusTimeline)
+        .filter(([key]) => key !== 'cancelled')
+        .map(([key, val]) => ({
+          status: key, ...val,
+          completed: val.step <= currentStatus.step && order.status !== 'cancelled',
+          current: key === order.status
+        }))
+    });
+  } catch (err) {
+    console.error('Track error:', err);
+    res.status(500).json({ error: 'Fehler beim Laden' });
+  }
+});
+
+// ================================================
+// ADMIN SETTINGS (Full settings management)
+// ================================================
+
+// Get all admin settings
+app.get('/api/admin/settings', auth(['admin']), (req, res) => {
+  try {
+    const rows = db.prepare('SELECT key, value FROM shop_settings').all();
+    const settings = {};
+    rows.forEach(row => settings[row.key] = row.value);
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save admin settings (bulk)
+app.post('/api/admin/settings', auth(['admin']), (req, res) => {
+  try {
+    const settings = req.body;
+    const stmt = db.prepare('INSERT OR REPLACE INTO shop_settings (key, value, updated_at) VALUES (?, ?, datetime("now"))');
+    
+    // Map frontend keys to backend keys
+    const keyMap = {
+      deliveryFee: 'delivery_fee',
+      freeDeliveryMin: 'free_delivery_threshold',
+      minOrder: 'min_order_value'
+    };
+    
+    Object.entries(settings).forEach(([key, value]) => {
+      const dbKey = keyMap[key] || key;
+      stmt.run(dbKey, String(value));
+    });
+    
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Catch-all for SPA
+
+// ============ DYNAMIC SITEMAP ============
+app.get('/sitemap.xml', (req, res) => {
+  const baseUrl = 'https://speeti.de';
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Get all categories with products
+  const categories = db.prepare('SELECT slug FROM categories WHERE id IN (SELECT DISTINCT category_id FROM products WHERE in_stock = 1)').all();
+  
+  // Get all visible products
+  const products = db.prepare('SELECT id, slug, created_at FROM products WHERE in_stock = 1 AND (visible = 1 OR visible IS NULL)').all();
+  
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+  
+  // Homepage
+  xml += `  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>1.0</priority>\n  </url>\n`;
+  
+  // Search
+  xml += `  <url>\n    <loc>${baseUrl}/search</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.9</priority>\n  </url>\n`;
+  
+  // Categories
+  categories.forEach(cat => {
+    xml += `  <url>\n    <loc>${baseUrl}/category/${cat.slug}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
+  });
+  
+  // Products
+  products.forEach(p => {
+    const lastmod = p.created_at ? p.created_at.split(' ')[0] : today;
+    xml += `  <url>\n    <loc>${baseUrl}/produkt/${p.slug || p.id}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.7</priority>\n  </url>\n`;
+  });
+  
+  // Static pages
+  ['impressum', 'datenschutz', 'agb', 'support', 'track'].forEach(page => {
+    xml += `  <url>\n    <loc>${baseUrl}/${page}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.5</priority>\n  </url>\n`;
+  });
+  
+  xml += '</urlset>';
+  
+  res.header('Content-Type', 'application/xml');
+  res.send(xml);
+});
+
+
+// ============ DYNAMIC SITEMAP ============
+app.get('/sitemap.xml', (req, res) => {
+  const baseUrl = 'https://speeti.de';
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Get all categories with products
+  const categories = db.prepare('SELECT slug FROM categories WHERE id IN (SELECT DISTINCT category_id FROM products WHERE in_stock = 1)').all();
+  
+  // Get all visible products
+  const products = db.prepare('SELECT id, slug, created_at FROM products WHERE in_stock = 1 AND (visible = 1 OR visible IS NULL)').all();
+  
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+  
+  // Homepage
+  xml += `  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>1.0</priority>\n  </url>\n`;
+  
+  // Search
+  xml += `  <url>\n    <loc>${baseUrl}/search</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.9</priority>\n  </url>\n`;
+  
+  // Categories
+  categories.forEach(cat => {
+    xml += `  <url>\n    <loc>${baseUrl}/category/${cat.slug}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
+  });
+  
+  // Products
+  products.forEach(p => {
+    const lastmod = p.created_at ? p.created_at.split(' ')[0] : today;
+    xml += `  <url>\n    <loc>${baseUrl}/produkt/${p.slug || p.id}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.7</priority>\n  </url>\n`;
+  });
+  
+  // Static pages
+  ['impressum', 'datenschutz', 'agb', 'support', 'track'].forEach(page => {
+    xml += `  <url>\n    <loc>${baseUrl}/${page}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.5</priority>\n  </url>\n`;
+  });
+  
+  xml += '</urlset>';
+  
+  res.header('Content-Type', 'application/xml');
+  res.send(xml);
+});
+
+
+// ============ SEO HELPERS ============
+function generateSlug(name, id) {
+  const base = name.toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return base + '-' + id;
+}
+
+// Get product by slug (SEO-friendly URL)
+app.get('/api/products/slug/:slug', (req, res) => {
+  const product = db.prepare('SELECT p.*, c.name as category_name, c.slug as category_slug FROM products p JOIN categories c ON p.category_id = c.id WHERE p.slug = ?').get(req.params.slug);
+  if (!product) return res.status(404).json({ error: 'Produkt nicht gefunden' });
+  res.json(product);
+});
+
+// ============ REVIEWS ============
+
+// Submit a review (public, uses order token for auth)
+app.post("/api/reviews", async (req, res) => {
+  try {
+    const { order_number, token, order_rating, order_comment, driver_rating, driver_comment } = req.body;
+    
+    if (!order_number || !token) {
+      return res.status(400).json({ error: "Bestellnummer und Token erforderlich" });
+    }
+    
+    // Find order and verify token
+    const order = db.prepare(`
+      SELECT o.id, o.user_id, o.driver_id, o.track_token, o.status
+      FROM orders o WHERE o.order_number = ?
+    `).get(order_number);
+    
+    if (!order || order.track_token !== token) {
+      return res.status(403).json({ error: "Ungültiger Token" });
+    }
+    
+    if (order.status !== "delivered") {
+      return res.status(400).json({ error: "Nur zugestellte Bestellungen können bewertet werden" });
+    }
+    
+    // Check if already reviewed
+    const existing = db.prepare("SELECT id FROM reviews WHERE order_id = ?").get(order.id);
+    if (existing) {
+      return res.status(400).json({ error: "Diese Bestellung wurde bereits bewertet" });
+    }
+    
+    // Insert review
+    const result = db.prepare(`
+      INSERT INTO reviews (order_id, user_id, order_rating, order_comment, driver_rating, driver_comment, driver_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(order.id, order.user_id, order_rating || null, order_comment || null, driver_rating || null, driver_comment || null, order.driver_id);
+    
+    res.json({ success: true, id: result.lastInsertRowid, message: "Danke für deine Bewertung! 🌟" });
+  } catch (e) {
+    console.error("Review error:", e);
+    res.status(500).json({ error: "Fehler beim Speichern" });
+  }
+});
+
+// Get review for an order (public with token)
+app.get("/api/reviews/:orderNumber", (req, res) => {
+  const { token } = req.query;
+  
+  const order = db.prepare("SELECT id, track_token FROM orders WHERE order_number = ?").get(req.params.orderNumber);
+  if (!order || (token && order.track_token !== token)) {
+    return res.status(404).json({ error: "Bestellung nicht gefunden" });
+  }
+  
+  const review = db.prepare("SELECT * FROM reviews WHERE order_id = ?").get(order.id);
+  res.json({ review: review || null, canReview: !review });
+});
+
+// Admin: Get all reviews
+app.get("/api/admin/reviews", auth(["admin"]), (req, res) => {
+  const reviews = db.prepare(`
+    SELECT r.*, o.order_number, u.name as customer_name, d.name as driver_name
+    FROM reviews r
+    LEFT JOIN orders o ON r.order_id = o.id
+    LEFT JOIN users u ON r.user_id = u.id
+    LEFT JOIN users d ON r.driver_id = d.id
+    ORDER BY r.created_at DESC
+    LIMIT 100
+  `).all();
+  res.json(reviews);
+});
+
+// Driver: Get own reviews
+app.get("/api/driver/reviews", auth(["driver"]), (req, res) => {
+  const reviews = db.prepare(`
+    SELECT r.driver_rating, r.driver_comment, r.created_at, o.order_number
+    FROM reviews r
+    JOIN orders o ON r.order_id = o.id
+    WHERE r.driver_id = ? AND r.driver_rating IS NOT NULL
+    ORDER BY r.created_at DESC
+  `).all(req.user.id);
+  
+  const avg = db.prepare("SELECT AVG(driver_rating) as avg FROM reviews WHERE driver_id = ? AND driver_rating IS NOT NULL").get(req.user.id);
+  
+  res.json({ reviews, averageRating: avg?.avg || 0 });
+});
+
+// Send tracking link via email (secure - no confirmation if email matches)
+app.post("/api/track/send-link", async (req, res) => {
+  const { order_number, email } = req.body;
+
+  // Normalize order number
+  const numOnly = order_number.toString().replace(/^(SPT-|SPEETI-)/i, "").replace(/^0+/, "");
+  const sptFormat = "SPT-" + numOnly.padStart(5, "0");
+  
+  if (!order_number || !email) {
+    return res.status(400).json({ error: "Bestellnummer und E-Mail erforderlich" });
+  }
+  
+  // Always return success (don't reveal if email matches!)
+  res.json({ 
+    success: true, 
+    message: "Wenn diese E-Mail-Adresse zu der Bestellung gehört, erhältst du in Kürze einen Link per E-Mail." 
+  });
+  
+  // Check in background and send email if matches
+  try {
+    const order = db.prepare(`
+      SELECT o.id, o.order_number, o.track_token, o.status, o.total, u.email as customer_email, u.name
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      WHERE o.order_number = ? OR o.id = ? OR o.order_number = ?
+    `).get(order_number, numOnly, sptFormat);
+    
+    if (order && order.customer_email && order.customer_email.toLowerCase() === email.toLowerCase()) {
+      const trackUrl = "https://speeti.de/track/" + order.order_number + "?token=" + order.track_token;
+      
+      await emailService.sendEmail(
+        order.customer_email,
+        "🔗 Dein Tracking-Link für Bestellung #" + order.order_number,
+        `<!DOCTYPE html>
+        <html><head><meta charset="utf-8"></head>
+        <body style="font-family:-apple-system,sans-serif;padding:20px;background:#f5f5f5;">
+          <div style="max-width:500px;margin:0 auto;background:white;border-radius:16px;overflow:hidden;">
+            <div style="background:linear-gradient(135deg,#ec4899,#f43f5e);padding:30px;text-align:center;">
+              <h1 style="color:white;margin:0;">🔗 Tracking-Link</h1>
+            </div>
+            <div style="padding:30px;">
+              <p>Hallo <strong>${order.name || ""}!</strong></p>
+              <p>Du hast einen Tracking-Link für deine Bestellung angefordert:</p>
+              <div style="background:#fdf2f8;padding:15px;border-radius:8px;margin:20px 0;text-align:center;">
+                <p style="margin:0;color:#666;">Bestellnummer</p>
+                <p style="margin:5px 0 0 0;font-size:20px;font-weight:bold;color:#ec4899;">#${order.order_number}</p>
+              </div>
+              <div style="text-align:center;margin:30px 0;">
+                <a href="${trackUrl}" style="display:inline-block;background:#ec4899;color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:bold;">📍 Bestellung verfolgen</a>
+              </div>
+              <p style="color:#666;font-size:13px;background:#f9f9f9;padding:12px;border-radius:8px;">
+                🔒 Dieser Link ist nur für dich bestimmt. Teile ihn nicht mit anderen.
+              </p>
+            </div>
+            <div style="background:#1f2937;color:#9ca3af;padding:20px;text-align:center;font-size:12px;">
+              <p style="margin:0;">🚴 Speeti • Dein Lieferservice in Münster</p>
+            </div>
+          </div>
+        </body></html>`
+      );
+      console.log("📧 Tracking link sent to:", order.customer_email);
+    }
+  } catch (e) {
+    console.error("Error sending tracking link:", e);
+  }
+});
+
+
+// Admin endpoint to view errors
+app.get("/api/admin/errors", auth(["admin"]), (req, res) => {
+  res.json(frontendErrors);
+});
+
+// Clear errors
+app.delete("/api/admin/errors", auth(["admin"]), (req, res) => {
+  frontendErrors.length = 0;
+  res.json({ cleared: true });
+});
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
+});
+
+// ================================================
+// START SERVER
+// ================================================
 server.listen(PORT, () => {
   console.log(`🚀 Speeti Backend running on port ${PORT}`);
 });
+
+// ============ ERROR TRACKING ============
+// Store frontend errors for debugging
+const frontendErrors = [];
+
+app.post("/api/errors/log", (req, res) => {
+  try {
+    const { message, stack, componentStack, url, userAgent, timestamp } = req.body;
+    
+    const error = {
+      id: Date.now(),
+      message: message?.substring(0, 500) || "Unknown error",
+      stack: stack?.substring(0, 2000) || "",
+      componentStack: componentStack?.substring(0, 1000) || "",
+      url: url?.substring(0, 200) || "",
+      userAgent: userAgent?.substring(0, 200) || "",
+      timestamp: timestamp || new Date().toISOString(),
+      ip: req.ip
+    };
+    
+    // Keep last 100 errors in memory
+    frontendErrors.unshift(error);
+    if (frontendErrors.length > 100) frontendErrors.pop();
+    
+    // Log to console for PM2 logs
+    console.error("🚨 FRONTEND ERROR:", error.message, "| URL:", error.url);
+    
+    res.json({ received: true });
+  } catch (e) {
+    res.json({ received: false });
+  }
+});
+

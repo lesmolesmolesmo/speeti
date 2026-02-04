@@ -1145,7 +1145,9 @@ const InventoryItem = memo(function InventoryItem({ item, onUpdateStock, onEdit,
 // Main Warehouse Page
 export default function Warehouse() {
   const navigate = useNavigate();
-  const { user, token } = useStore();
+  const user = useStore(state => state.user);
+  const token = useStore(state => state.token);
+  const _hasHydrated = useStore(state => state._hasHydrated);
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
@@ -1328,6 +1330,7 @@ export default function Warehouse() {
     out: inventory.filter(i => i.stock === 0).length
   };
 
+  if (!_hasHydrated) return <div className='min-h-screen flex items-center justify-center'><div className='w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin'></div></div>;
   if (!user || user.role !== 'admin') return null;
 
   return (

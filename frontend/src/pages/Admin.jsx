@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, startTransition, useCallback, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, Grid3X3, ShoppingBag, Users, Truck, Settings, 
@@ -7,10 +7,12 @@ import {
   Calendar, BarChart3, ArrowUpRight, ArrowDownRight, Filter, Download,
   Printer, RefreshCw, Bell, ChevronDown, ChevronRight, Copy, ExternalLink,
   Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer, Headphones,
-  MessageCircle, Bot, User, Send, Warehouse, ScanLine, Upload, LogOut, Loader2, Sparkles
+  MessageCircle, Bot, User, UserCheck, Send, Warehouse, ScanLine, Upload, LogOut, Loader2, Sparkles, Star
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import AdminDashboard from './AdminDashboard';
 import { useStore, api } from '../store';
+import ProductModal from '../components/ProductModal';
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -21,6 +23,7 @@ const tabs = [
   { id: 'drivers', label: 'Fahrer', icon: Truck },
   { id: 'customers', label: 'Kunden', icon: Users },
   { id: 'support', label: 'Support', icon: Headphones, supportBadge: true },
+  { id: 'reviews', label: 'Bewertungen', icon: Star },
   { id: 'analytics', label: 'Statistiken', icon: BarChart3 },
   { id: 'settings', label: 'Einstellungen', icon: Settings },
 ];
@@ -37,7 +40,9 @@ const orderStatuses = {
 
 export default function Admin() {
   const navigate = useNavigate();
-  const { user, logout } = useStore();
+  const user = useStore(state => state.user);
+  const logout = useStore(state => state.logout);
+  const _hasHydrated = useStore(state => state._hasHydrated);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState({});
   const [orders, setOrders] = useState([]);
@@ -53,44 +58,19 @@ export default function Admin() {
   const [supportTickets, setSupportTickets] = useState([]);
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [ticketMessages, setTicketMessages] = useState([]);
-  const [supportReply, setSupportReply] = useState('');
-  const [productForm, setProductForm] = useState({
-    name: '',
-    description: '',
-    price: '',
-    original_price: '',
-    category_id: '',
-    unit: 'Stück',
-    unit_amount: '1',
-    image: '',
-    sku: '',
-    ean: '',
-    weight: '',
-    weight_unit: 'g',
-    stock_count: 100,
-    min_order: 1,
-    max_order: 99,
-    tax_rate: 19,
-    deposit: 0,
-    storage_temp: '',
-    allergens: '',
-    ingredients: '',
-    nutrition_info: '',
-    origin: '',
-    brand: '',
-    featured: false,
-    in_stock: true,
-    visible: true
-  });
-  const [productSection, setProductSection] = useState('basic');
-  const [autoFillLoading, setAutoFillLoading] = useState(false);
+  const [adminReviews, setAdminReviews] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  // MOVED to SupportTab: const [supportReply, setSupportReply] = useState('');
+  
+  
+  
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
       navigate('/login?redirect=/admin');
       return;
     }
-    loadData();
+    loadData().finally(() => setIsLoading(false));
     // Auto refresh every 30s
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
@@ -98,20 +78,25 @@ export default function Admin() {
 
   const loadData = async () => {
     try {
-      const [statsRes, ordersRes, productsRes, catsRes, usersRes, supportRes] = await Promise.all([
+      const [statsRes, ordersRes, productsRes, catsRes, usersRes, supportRes, reviewsRes] = await Promise.all([
         api.get('/admin/stats'),
         api.get('/orders'),
         api.get('/products'),
         api.get('/categories'),
         api.get('/admin/users'),
-        api.get('/admin/support').catch(() => ({ data: [] }))
+        api.get('/admin/support').catch(() => ({ data: [] })),
+        api.get("/admin/reviews").catch(() => ({ data: [] }))
       ]);
-      setStats(statsRes.data);
-      setOrders(ordersRes.data);
-      setProducts(productsRes.data);
-      setCategories(catsRes.data);
-      setUsers(usersRes.data);
-      setSupportTickets(supportRes.data);
+      // Batch all state updates in startTransition to prevent render conflicts
+      startTransition(() => {
+        setStats(statsRes.data);
+        setOrders(ordersRes.data);
+        setProducts(productsRes.data);
+        setCategories(catsRes.data);
+        setUsers(usersRes.data);
+        setSupportTickets(supportRes.data);
+        setAdminReviews(reviewsRes.data);
+      });
     } catch (e) {
       console.error(e);
     }
@@ -121,114 +106,7 @@ export default function Admin() {
   const escalatedCount = supportTickets.filter(t => t.escalated && t.status === 'open').length;
 
   // ============ DASHBOARD ============
-  const DashboardTab = () => (
-    <div className="space-y-6">
-      {/* Welcome Banner */}
-      <div className="bg-gradient-to-r from-primary-600 to-teal-500 rounded-2xl p-6 text-white">
-        <h1 className="text-2xl font-bold mb-1">Willkommen zurück! </h1>
-        <p className="text-white/80">Hier ist dein Überblick für heute.</p>
-      </div>
-
-      {/* Quick Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard icon={ShoppingBag} label="Bestellungen heute" value={stats.orders_today || 0} trend="+12%" trendUp />
-        <StatCard icon={DollarSign} label="Umsatz heute" value={`${(stats.revenue_today || 0).toFixed(2)}€`} trend="+8%" trendUp />
-        <StatCard icon={AlertCircle} label="Offene Bestellungen" value={stats.pending_orders || 0} highlight />
-        <StatCard icon={Users} label="Neue Kunden" value={stats.total_customers || 0} trend="+5%" trendUp />
-      </div>
-
-      {/* Live Orders */}
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-            <h3 className="font-semibold">Live Bestellungen</h3>
-          </div>
-          <button onClick={() => setActiveTab('orders')} className="text-primary-600 text-sm font-medium">
-            Alle anzeigen →
-          </button>
-        </div>
-        <div className="divide-y divide-gray-100">
-          {orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').slice(0, 5).map(order => (
-            <OrderRow key={order.id} order={order} compact onClick={() => { setSelectedOrder(order); setActiveTab('orders'); }} />
-          ))}
-          {orders.filter(o => o.status !== 'delivered').length === 0 && (
-            <div className="p-8 text-center text-gray-400">
-              <CheckCircle size={40} className="mx-auto mb-2 opacity-50" />
-              <p>Keine offenen Bestellungen</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <QuickAction icon={Plus} label="Neues Produkt" onClick={() => { 
-    setEditItem(null); 
-    setProductForm({
-      name: '',
-      description: '',
-      price: '',
-      original_price: '',
-      category_id: categories[0]?.id || '',
-      unit: 'Stück',
-      unit_amount: '1',
-      image: '',
-      sku: '',
-      ean: '',
-      weight: '',
-      weight_unit: 'g',
-      stock_count: 100,
-      min_order: 1,
-      max_order: 99,
-      tax_rate: 19,
-      deposit: 0,
-      storage_temp: '',
-      allergens: '',
-      ingredients: '',
-      nutrition_info: '',
-      origin: '',
-      brand: '',
-      featured: false,
-      in_stock: true,
-      visible: true
-    });
-    setProductSection('basic');
-    setShowModal('product'); 
-  }} />
-        <QuickAction icon={Truck} label="Neuer Fahrer" onClick={() => { setEditItem(null); setShowModal('driver'); }} />
-        <QuickAction icon={Grid3X3} label="Neue Kategorie" onClick={() => { setEditItem(null); setShowModal('category'); }} />
-        <QuickAction icon={Download} label="Bericht exportieren" />
-      </div>
-    </div>
-  );
-
-  const StatCard = ({ icon: Icon, label, value, trend, trendUp, highlight }) => (
-    <div className={`rounded-2xl p-5 ${highlight ? 'bg-yellow-50 border-2 border-yellow-200' : 'bg-white shadow-sm'}`}>
-      <div className="flex items-center justify-between mb-3">
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${highlight ? 'bg-yellow-200' : 'bg-gray-100'}`}>
-          <Icon size={20} className={highlight ? 'text-yellow-700' : 'text-gray-600'} />
-        </div>
-        {trend && (
-          <span className={`text-xs font-semibold flex items-center gap-1 ${trendUp ? 'text-green-600' : 'text-red-600'}`}>
-            {trendUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
-            {trend}
-          </span>
-        )}
-      </div>
-      <p className="text-2xl font-bold text-gray-900">{value}</p>
-      <p className="text-sm text-gray-500">{label}</p>
-    </div>
-  );
-
-  const QuickAction = ({ icon: Icon, label, onClick }) => (
-    <button onClick={onClick} className="bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-all flex items-center gap-3 text-left">
-      <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
-        <Icon size={20} className="text-primary-600" />
-      </div>
-      <span className="font-medium text-sm text-gray-700">{label}</span>
-    </button>
-  );
+  // Moved to AdminDashboard.jsx
 
   // ============ ORDERS ============
   const OrderRow = ({ order, compact, onClick }) => {
@@ -477,420 +355,7 @@ export default function Admin() {
     </div>
   );
 
-  // ============ PRODUCT MODAL - FULL FEATURED ============
-  const ProductModal = () => {
-    // Use parent state to prevent reset on re-render
-    const form = editItem || productForm;
-    const setForm = (newForm) => {
-      if (editItem) {
-        setEditItem(newForm);
-      } else {
-        setProductForm(typeof newForm === 'function' ? newForm(productForm) : newForm);
-      }
-    };
-    const activeSection = productSection;
-    const setActiveSection = setProductSection;
-
-    // Auto-fill from Open Food Facts
-    const autoFillProduct = async () => {
-      if (!form.name || form.name.length < 3) {
-        alert('Bitte gib zuerst einen Produktnamen ein (min. 3 Zeichen)');
-        return;
-      }
-      
-      setAutoFillLoading(true);
-      try {
-        // Search Open Food Facts by product name
-        const searchRes = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(form.name)}&search_simple=1&action=process&json=1&page_size=5`);
-        const searchData = await searchRes.json();
-        
-        if (searchData.products && searchData.products.length > 0) {
-          // Find best match (first result or one with most data)
-          const product = searchData.products[0];
-          
-          // Update form with found data (but NOT the image!)
-          setForm({
-            ...form,
-            description: product.generic_name_de || product.generic_name || product.product_name_de || form.description || '',
-            brand: product.brands || form.brand || '',
-            ean: product.code || form.ean || '',
-            weight: product.quantity ? product.quantity.replace(/[^0-9]/g, '') : form.weight || '',
-            weight_unit: product.quantity?.includes('ml') ? 'ml' : (product.quantity?.includes('l') ? 'l' : 'g'),
-            ingredients: product.ingredients_text_de || product.ingredients_text || form.ingredients || '',
-            allergens: product.allergens_tags ? product.allergens_tags.map(a => a.replace('en:', '')).join(', ') : form.allergens || '',
-            nutrition_info: product.nutriments ? `Energie: ${product.nutriments['energy-kcal_100g'] || '?'} kcal, Fett: ${product.nutriments.fat_100g || '?'}g, Kohlenhydrate: ${product.nutriments.carbohydrates_100g || '?'}g, Zucker: ${product.nutriments.sugars_100g || '?'}g, Eiweiß: ${product.nutriments.proteins_100g || '?'}g, Salz: ${product.nutriments.salt_100g || '?'}g` : form.nutrition_info || '',
-            origin: product.origins || product.countries_tags?.[0]?.replace('en:', '') || form.origin || '',
-            // Don't override image - user wants to add their own
-          });
-          
-          alert('✅ Produktdaten gefunden und eingefügt! Bitte prüfen und ggf. anpassen.');
-        } else {
-          alert('❌ Kein Produkt gefunden. Versuche einen anderen Namen oder fülle manuell aus.');
-        }
-      } catch (err) {
-        console.error('Auto-fill error:', err);
-        alert('❌ Fehler beim Abrufen der Produktdaten. Bitte manuell ausfüllen.');
-      } finally {
-        setAutoFillLoading(false);
-      }
-    };
-
-    const sections = [
-      { id: 'basic', label: 'Basis', icon: Info },
-      { id: 'pricing', label: 'Preise', icon: Tag },
-      { id: 'inventory', label: 'Bestand', icon: Box },
-      { id: 'details', label: 'Details', icon: Barcode },
-      { id: 'nutrition', label: 'Nährwerte', icon: Scale },
-    ];
-
-    const handleSubmit = async (e) => {
-      e.preventDefault();
-      const data = { ...form, price: parseFloat(form.price), original_price: form.original_price ? parseFloat(form.original_price) : null };
-      if (editItem) {
-        await api.put(`/admin/products/${editItem.id}`, data);
-      } else {
-        await api.post('/admin/products', data);
-      }
-      setShowModal(null);
-      loadData();
-    };
-
-    return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-        <motion.div
-          initial={{ scale: 0.95, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col"
-        >
-          {/* Header */}
-          <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
-            <div>
-              <h2 className="text-lg font-bold">{editItem ? 'Produkt bearbeiten' : 'Neues Produkt anlegen'}</h2>
-              <p className="text-sm text-gray-500">Fülle alle relevanten Felder aus</p>
-            </div>
-            <button onClick={() => setShowModal(null)} className="p-2 hover:bg-gray-200 rounded-full">
-              <X size={20} />
-            </button>
-          </div>
-
-          {/* Section Tabs */}
-          <div className="flex border-b border-gray-200 px-4 bg-white">
-            {sections.map(sec => (
-              <button
-                key={sec.id}
-                onClick={() => setActiveSection(sec.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                  activeSection === sec.id 
-                    ? 'border-primary-500 text-primary-600' 
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <sec.icon size={16} />
-                {sec.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Form Content */}
-          <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6">
-            {activeSection === 'basic' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Produktname *</label>
-                    <div className="flex gap-2">
-                      <input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required
-                        className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        placeholder="z.B. HARIBO Goldbären 175g"
-                      />
-                      <button
-                        type="button"
-                        onClick={autoFillProduct}
-                        disabled={autoFillLoading || !form.name || form.name.length < 3}
-                        className="px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium hover:from-violet-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
-                        title="Produktdaten automatisch aus Open Food Facts laden"
-                      >
-                        {autoFillLoading ? (
-                          <><Loader2 size={18} className="animate-spin" /> Suche...</>
-                        ) : (
-                          <><Sparkles size={18} /> Auto-Fill</>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-400 mt-1">💡 Tipp: Gib den vollen Produktnamen ein und klicke "Auto-Fill" für automatische Daten</p>
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
-                    <textarea value={form.description || ''} onChange={(e) => setForm({...form, description: e.target.value})} rows={3}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="Produktbeschreibung für Kunden..."
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie *</label>
-                    <select value={form.category_id} onChange={(e) => setForm({...form, category_id: parseInt(e.target.value)})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    >
-                      {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Marke</label>
-                    <input type="text" value={form.brand || ''} onChange={(e) => setForm({...form, brand: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. Weihenstephan"
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Produktbild</label>
-                    <div className="flex gap-4 items-start">
-                      {/* Preview */}
-                      <div className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-xl overflow-hidden flex items-center justify-center bg-gray-50">
-                        {form.image ? (
-                          <img src={form.image} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <Image size={32} className="text-gray-300" />
-                        )}
-                      </div>
-                      {/* Upload Options */}
-                      <div className="flex-1 space-y-2">
-                        {/* File Upload */}
-                        <label className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                          <Upload size={18} className="text-gray-500" />
-                          <span className="text-sm text-gray-600">Bild hochladen</span>
-                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
-                            const file = e.target.files[0];
-                            if (!file) return;
-                            const formData = new FormData();
-                            formData.append('image', file);
-                            try {
-                              const res = await api.post('/upload/product', formData, {
-                                headers: { 'Content-Type': 'multipart/form-data' }
-                              });
-                              setForm({...form, image: res.data.url});
-                            } catch (err) {
-                              alert('Upload fehlgeschlagen');
-                            }
-                          }} />
-                        </label>
-                        {/* URL Input */}
-                        <input type="url" value={form.image || ''} onChange={(e) => setForm({...form, image: e.target.value})}
-                          className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
-                          placeholder="oder URL eingeben: https://..."
-                        />
-                        {form.image && (
-                          <button type="button" onClick={() => setForm({...form, image: ''})} className="text-xs text-red-500 hover:underline">
-                            Bild entfernen
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeSection === 'pricing' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Verkaufspreis (€) *</label>
-                    <input type="number" step="0.01" value={form.price} onChange={(e) => setForm({...form, price: e.target.value})} required
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="0.00"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Streichpreis (€)</label>
-                    <input type="number" step="0.01" value={form.original_price || ''} onChange={(e) => setForm({...form, original_price: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="Alter Preis für Rabatt-Anzeige"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">MwSt. (%)</label>
-                    <select value={form.tax_rate} onChange={(e) => setForm({...form, tax_rate: parseInt(e.target.value)})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    >
-                      <option value={19}>19% (Standard)</option>
-                      <option value={7}>7% (Ermäßigt)</option>
-                      <option value={0}>0% (Steuerfrei)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Pfand (€)</label>
-                    <input type="number" step="0.01" value={form.deposit || ''} onChange={(e) => setForm({...form, deposit: parseFloat(e.target.value) || 0})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-                <div className="p-4 bg-blue-50 rounded-xl">
-                  <p className="text-sm text-blue-800">
-                    <strong>💡 Tipp:</strong> Setze einen Streichpreis um Rabatte anzuzeigen. Der Rabatt wird automatisch berechnet.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {activeSection === 'inventory' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Einheit</label>
-                    <select value={form.unit} onChange={(e) => setForm({...form, unit: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    >
-                      <option value="Stück">Stück</option>
-                      <option value="kg">Kilogramm (kg)</option>
-                      <option value="g">Gramm (g)</option>
-                      <option value="L">Liter (L)</option>
-                      <option value="ml">Milliliter (ml)</option>
-                      <option value="Bund">Bund</option>
-                      <option value="Packung">Packung</option>
-                      <option value="Flasche">Flasche</option>
-                      <option value="Dose">Dose</option>
-                      <option value="Glas">Glas</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Menge pro Einheit</label>
-                    <input type="text" value={form.unit_amount} onChange={(e) => setForm({...form, unit_amount: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. 500, 1, 6x0.33"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Lagerbestand</label>
-                    <input type="number" value={form.stock_count} onChange={(e) => setForm({...form, stock_count: parseInt(e.target.value)})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Mindestbestellmenge</label>
-                    <input type="number" value={form.min_order} onChange={(e) => setForm({...form, min_order: parseInt(e.target.value)})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Maximalbestellmenge</label>
-                    <input type="number" value={form.max_order} onChange={(e) => setForm({...form, max_order: parseInt(e.target.value)})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Lagertemperatur</label>
-                    <select value={form.storage_temp || ''} onChange={(e) => setForm({...form, storage_temp: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    >
-                      <option value="">Normal</option>
-                      <option value="kühl">Kühlware (2-7°C)</option>
-                      <option value="tiefkühl">Tiefkühl (-18°C)</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={form.in_stock} onChange={(e) => setForm({...form, in_stock: e.target.checked})} className="w-4 h-4 rounded" />
-                    <span className="text-sm">Auf Lager</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={form.featured} onChange={(e) => setForm({...form, featured: e.target.checked})} className="w-4 h-4 rounded" />
-                    <span className="text-sm">Als "Beliebt" anzeigen</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={form.visible !== false} onChange={(e) => setForm({...form, visible: e.target.checked})} className="w-4 h-4 rounded" />
-                    <span className="text-sm">Sichtbar im Shop</span>
-                  </label>
-                </div>
-              </div>
-            )}
-
-            {activeSection === 'details' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">SKU / Artikelnummer</label>
-                    <input type="text" value={form.sku || ''} onChange={(e) => setForm({...form, sku: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. MILK-001"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">EAN / Barcode</label>
-                    <input type="text" value={form.ean || ''} onChange={(e) => setForm({...form, ean: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. 4012345678901"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Gewicht</label>
-                    <div className="flex gap-2">
-                      <input type="number" value={form.weight || ''} onChange={(e) => setForm({...form, weight: e.target.value})}
-                        className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        placeholder="0"
-                      />
-                      <select value={form.weight_unit} onChange={(e) => setForm({...form, weight_unit: e.target.value})}
-                        className="px-3 py-2.5 border border-gray-200 rounded-xl"
-                      >
-                        <option value="g">g</option>
-                        <option value="kg">kg</option>
-                        <option value="ml">ml</option>
-                        <option value="L">L</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Herkunft</label>
-                    <input type="text" value={form.origin || ''} onChange={(e) => setForm({...form, origin: e.target.value})}
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. Deutschland, Bayern"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeSection === 'nutrition' && (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Zutaten</label>
-                  <textarea value={form.ingredients || ''} onChange={(e) => setForm({...form, ingredients: e.target.value})} rows={3}
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    placeholder="Vollständige Zutatenliste..."
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Allergene</label>
-                  <input type="text" value={form.allergens || ''} onChange={(e) => setForm({...form, allergens: e.target.value})}
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    placeholder="z.B. Milch, Gluten, Nüsse"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nährwerte (pro 100g/ml)</label>
-                  <textarea value={form.nutrition_info || ''} onChange={(e) => setForm({...form, nutrition_info: e.target.value})} rows={4}
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    placeholder="Brennwert: 250 kJ / 60 kcal&#10;Fett: 3,5 g&#10;Kohlenhydrate: 4,8 g&#10;Eiweiß: 3,3 g"
-                  />
-                </div>
-              </div>
-            )}
-          </form>
-
-          {/* Footer */}
-          <div className="p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
-            <button type="button" onClick={() => setShowModal(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-xl">
-              Abbrechen
-            </button>
-            <button onClick={handleSubmit} className="px-6 py-2 bg-primary-500 text-white rounded-xl hover:bg-primary-600 flex items-center gap-2">
-              <Save size={18} /> {editItem ? 'Speichern' : 'Produkt anlegen'}
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    );
-  };
+  // ProductModal is now a separate component
 
   // ============ CATEGORIES ============
   const CategoriesTab = () => (
@@ -1238,8 +703,25 @@ export default function Admin() {
 
   // ============ SUPPORT ============
   const SupportTab = () => {
+    const [supportReply, setSupportReply] = useState('');
+    const inputRef = useRef(null);
+    // Restore focus after messages load
+    useEffect(() => {
+      if (selectedTicket && inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, [ticketMessages, selectedTicket]);
+    const [showClosed, setShowClosed] = useState(false);
+    const [supportStats, setSupportStats] = useState(null);
+    
     const openTickets = supportTickets.filter(t => t.status === 'open');
     const closedTickets = supportTickets.filter(t => t.status === 'closed');
+    const displayTickets = showClosed ? closedTickets : openTickets;
+    const humanTakeoverCount = openTickets.filter(t => t.human_takeover).length;
+    
+    useEffect(() => {
+      api.get('/admin/support/stats').then(r => setSupportStats(r.data)).catch(() => {});
+    }, []);  // Only fetch once
     
     const loadTicketMessages = async (ticketId) => {
       try {
@@ -1262,10 +744,29 @@ export default function Admin() {
       }
     };
     
+    const toggleTakeover = async (ticketId, currentState) => {
+      try {
+        await api.post(`/admin/support/${ticketId}/takeover`, { takeover: !currentState });
+        loadTicketMessages(ticketId);
+        loadData();
+      } catch (e) {
+        alert('Fehler beim Übernehmen');
+      }
+    };
+    
     const closeTicket = async (ticketId) => {
       try {
-        await api.patch(`/admin/support/${ticketId}/close`);
+        await api.post(`/admin/support/${ticketId}/close`, { resolution: 'Vom Support geschlossen' });
         setSelectedTicket(null);
+        loadData();
+      } catch (e) {
+        alert('Fehler');
+      }
+    };
+    
+    const reopenTicket = async (ticketId) => {
+      try {
+        await api.post(`/admin/support/${ticketId}/reopen`);
         loadData();
       } catch (e) {
         alert('Fehler');
@@ -1284,13 +785,33 @@ export default function Admin() {
           </button>
         </div>
 
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-gray-900">{supportStats?.open || openTickets.length}</p>
+            <p className="text-xs text-gray-500">Offen</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-red-600">{escalatedCount}</p>
+            <p className="text-xs text-gray-500">Eskaliert</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-blue-600">{humanTakeoverCount}</p>
+            <p className="text-xs text-gray-500">Übernommen</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <p className="text-2xl font-bold text-green-600">{supportStats?.closed || closedTickets.length}</p>
+            <p className="text-xs text-gray-500">Geschlossen</p>
+          </div>
+        </div>
+
         {/* Escalation Alert */}
         {escalatedCount > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
             <AlertCircle className="text-red-500" size={24} />
             <div className="flex-1">
-              <p className="font-semibold text-red-800">{escalatedCount} eskalierte Tickets</p>
-              <p className="text-sm text-red-600">Diese Kunden wollen mit einem echten Mitarbeiter sprechen</p>
+              <p className="font-semibold text-red-800">{escalatedCount} eskalierte Tickets benötigen Aufmerksamkeit!</p>
+              <p className="text-sm text-red-600">Kunden warten auf einen echten Mitarbeiter - bitte übernehmen!</p>
             </div>
           </div>
         )}
@@ -1298,17 +819,28 @@ export default function Admin() {
         <div className="grid lg:grid-cols-2 gap-4">
           {/* Ticket List */}
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-gray-100">
-              <span className="font-semibold">Offene Tickets ({openTickets.length})</span>
+            <div className="p-3 border-b border-gray-100 flex gap-2">
+              <button 
+                onClick={() => setShowClosed(false)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${!showClosed ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Offen ({openTickets.length})
+              </button>
+              <button 
+                onClick={() => setShowClosed(true)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${showClosed ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                Geschlossen ({closedTickets.length})
+              </button>
             </div>
             <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
-              {openTickets.length === 0 ? (
+              {displayTickets.length === 0 ? (
                 <div className="p-8 text-center text-gray-400">
                   <Headphones size={40} className="mx-auto mb-2 opacity-50" />
-                  <p>Keine offenen Tickets</p>
+                  <p>{showClosed ? 'Keine geschlossenen Tickets' : 'Keine offenen Tickets'}</p>
                 </div>
               ) : (
-                openTickets.map(ticket => (
+                displayTickets.map(ticket => (
                   <div
                     key={ticket.id}
                     onClick={() => loadTicketMessages(ticket.id)}
@@ -1318,8 +850,12 @@ export default function Admin() {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-medium">#{ticket.id}</span>
-                          {ticket.escalated ? (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+                          {ticket.human_takeover ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                              🙋 Übernommen
+                            </span>
+                          ) : ticket.escalated ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium animate-pulse">
                               🚨 Eskaliert
                             </span>
                           ) : (
@@ -1327,9 +863,17 @@ export default function Admin() {
                               🤖 KI
                             </span>
                           )}
+                          {ticket.status === 'closed' && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                              ✓ Geschlossen
+                            </span>
+                          )}
                         </div>
                         <p className="text-sm text-gray-600 mt-1">{ticket.user_name}</p>
                         <p className="text-xs text-gray-400">{ticket.user_email}</p>
+                        {ticket.last_message && (
+                          <p className="text-xs text-gray-500 mt-1 truncate max-w-[200px]">"{ticket.last_message.substring(0, 50)}..."</p>
+                        )}
                       </div>
                       <div className="text-right">
                         <p className="text-xs text-gray-400">
@@ -1349,22 +893,54 @@ export default function Admin() {
             {selectedTicket ? (
               <>
                 {/* Ticket Header */}
-                <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-                  <div>
+                <div className="p-4 border-b border-gray-100">
+                  <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">Ticket #{selectedTicket.id}</span>
-                      {selectedTicket.escalated && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">Eskaliert</span>
+                      {selectedTicket.human_takeover ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">🙋 Du antwortest</span>
+                      ) : selectedTicket.escalated ? (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 animate-pulse">🚨 Wartet auf Übernahme</span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">🤖 KI antwortet</span>
                       )}
                     </div>
-                    <p className="text-sm text-gray-500">{selectedTicket.user_name} • {selectedTicket.user_email}</p>
+                    <p className="text-xs text-gray-400">{selectedTicket.user_email}</p>
                   </div>
-                  <button
-                    onClick={() => closeTicket(selectedTicket.id)}
-                    className="px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 flex items-center gap-2"
-                  >
-                    <CheckCircle size={16} /> Schließen
-                  </button>
+                  <p className="text-sm text-gray-600 mb-3">{selectedTicket.user_name}</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {selectedTicket.status === 'open' ? (
+                      <>
+                        <button
+                          onClick={() => toggleTakeover(selectedTicket.id, selectedTicket.human_takeover)}
+                          className={`flex-1 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                            selectedTicket.human_takeover 
+                              ? 'bg-gray-200 text-gray-700 hover:bg-gray-300' 
+                              : 'bg-blue-500 text-white hover:bg-blue-600'
+                          }`}
+                        >
+                          {selectedTicket.human_takeover ? (
+                            <><Bot size={16} /> An KI zurückgeben</>
+                          ) : (
+                            <><UserCheck size={16} /> Übernehmen</>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => closeTicket(selectedTicket.id)}
+                          className="px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 flex items-center gap-2"
+                        >
+                          <CheckCircle size={16} /> Schließen
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => reopenTicket(selectedTicket.id)}
+                        className="flex-1 py-2 bg-amber-500 text-white rounded-xl text-sm font-medium hover:bg-amber-600 flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw size={16} /> Wieder öffnen
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Messages */}
@@ -1403,6 +979,7 @@ export default function Admin() {
                   <div className="flex gap-2">
                     <input
                       type="text"
+                      ref={inputRef}
                       value={supportReply}
                       onChange={(e) => setSupportReply(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && sendReply()}
@@ -1428,6 +1005,158 @@ export default function Admin() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  // ============ REVIEWS TAB ============
+  const ReviewsTab = () => {
+    const averageRating = adminReviews && adminReviews.length > 0
+      ? (adminReviews.reduce((sum, r) => sum + ((r.order_rating || 0) + (r.driver_rating || 0)) / (r.order_rating && r.driver_rating ? 2 : 1), 0) / adminReviews.length).toFixed(1)
+      : '0.0';
+
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-amber-400 to-yellow-500 rounded-2xl p-6 text-white">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold mb-1">⭐ Kundenbewertungen</h1>
+              <p className="text-white/80">Alle Bewertungen im Überblick</p>
+            </div>
+            <div className="text-right">
+              <div className="text-4xl font-bold">{averageRating}</div>
+              <p className="text-white/80 text-sm">Durchschnitt</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center">
+                <Star size={20} className="text-yellow-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{adminReviews?.length || 0}</p>
+                <p className="text-xs text-gray-500">Gesamt</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center text-green-600 font-bold">5★</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => r.order_rating === 5 || r.driver_rating === 5).length}</p>
+                <p className="text-xs text-gray-500">5 Sterne</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 font-bold">4★</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => r.order_rating === 4 || r.driver_rating === 4).length}</p>
+                <p className="text-xs text-gray-500">4 Sterne</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center text-red-600 font-bold">≤3</div>
+              <div>
+                <p className="text-2xl font-bold">{(adminReviews || []).filter(r => (r.order_rating && r.order_rating <= 3) || (r.driver_rating && r.driver_rating <= 3)).length}</p>
+                <p className="text-xs text-gray-500">Kritisch</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Reviews List */}
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="font-bold text-gray-900">Alle Bewertungen</h2>
+            <span className="text-sm text-gray-500">{adminReviews?.length || 0} Einträge</span>
+          </div>
+          {adminReviews.length > 0 ? (
+            <div className="divide-y divide-gray-100">
+              {adminReviews.map((review, i) => (
+                <div key={i} className="p-4 hover:bg-gray-50 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="font-medium text-gray-900">{review.order_number || `#${review.order_id}`}</span>
+                        <span className="text-xs text-gray-400">
+                          {new Date(review.created_at).toLocaleDateString('de-DE', { 
+                            day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+                          })}
+                        </span>
+                      </div>
+                      
+                      {/* Order Rating */}
+                      {review.order_rating && (
+                        <div className="mb-2">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-500 w-20">Bestellung:</span>
+                            <div className="flex items-center gap-1">
+                              {[1,2,3,4,5].map(s => (
+                                <Star key={s} size={14} className={s <= review.order_rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'} />
+                              ))}
+                            </div>
+                          </div>
+                          {review.order_comment && (
+                            <p className="text-sm text-gray-600 mt-1 ml-[88px]">"{review.order_comment}"</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Driver Rating */}
+                      {review.driver_rating && (
+                        <div>
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-500 w-20">Fahrer:</span>
+                            <div className="flex items-center gap-1">
+                              {[1,2,3,4,5].map(s => (
+                                <Star key={s} size={14} className={s <= review.driver_rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'} />
+                              ))}
+                            </div>
+                            {review.driver_name && (
+                              <span className="text-xs text-gray-400">({review.driver_name})</span>
+                            )}
+                          </div>
+                          {review.driver_comment && (
+                            <p className="text-sm text-gray-600 mt-1 ml-[88px]">"{review.driver_comment}"</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Overall indicator */}
+                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                      (review.order_rating >= 4 && review.driver_rating >= 4) || (!review.driver_rating && review.order_rating >= 4)
+                        ? 'bg-green-100 text-green-700'
+                        : (review.order_rating <= 2 || review.driver_rating <= 2)
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {(review.order_rating >= 4 && (!review.driver_rating || review.driver_rating >= 4)) ? '👍 Gut' 
+                        : (review.order_rating <= 2 || review.driver_rating <= 2) ? '⚠️ Kritisch' 
+                        : '😐 OK'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="p-12 text-center">
+              <div className="text-5xl mb-3">⭐</div>
+              <h3 className="font-bold text-gray-900 mb-1">Noch keine Bewertungen</h3>
+              <p className="text-gray-500 text-sm">Bewertungen erscheinen hier sobald Kunden ihre Bestellungen bewerten.</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1627,6 +1356,17 @@ export default function Admin() {
   };
 
   // ============ RENDER ============
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-rose-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-500">Lade Admin Panel...</p>
+        </div>
+      </div>
+    );
+  }
+  
   return (
     <div className="min-h-screen bg-gray-100 flex">
       {/* Sidebar */}
@@ -1686,13 +1426,14 @@ export default function Admin() {
       {/* Main */}
       <main className="flex-1 p-4 lg:p-6 pt-16 lg:pt-6 overflow-auto">
         <div className="max-w-6xl mx-auto">
-          {activeTab === 'dashboard' && <DashboardTab />}
+          {activeTab === 'dashboard' && <AdminDashboard stats={stats} orders={orders} setActiveTab={setActiveTab} setSelectedOrder={setSelectedOrder} orderStatuses={orderStatuses} />}
           {activeTab === 'orders' && <OrdersTab />}
           {activeTab === 'products' && productsTab}
           {activeTab === 'categories' && <CategoriesTab />}
           {activeTab === 'drivers' && <DriversTab />}
           {activeTab === 'customers' && <CustomersTab />}
           {activeTab === 'support' && <SupportTab />}
+          {activeTab === 'reviews' && <ReviewsTab />}
           {activeTab === 'analytics' && <div className="text-center py-12 text-gray-400">📊 Statistiken kommen bald</div>}
           {activeTab === 'settings' && <SettingsTab />}
         </div>
@@ -1700,7 +1441,22 @@ export default function Admin() {
 
       {/* Modals */}
       <AnimatePresence>
-        {showModal === 'product' && <ProductModal />}
+        <ProductModal 
+          isOpen={showModal === 'product'}
+          onClose={() => setShowModal(null)}
+          editItem={editItem}
+          categories={categories}
+          onSave={async (data, edit) => {
+            if (edit) {
+              await api.put(`/admin/products/${edit.id}`, data);
+            } else {
+              await api.post('/admin/products', data);
+            }
+            setShowModal(null);
+            setEditItem(null);
+            loadData();
+          }}
+        />
         {showModal === 'category' && <CategoryModal />}
         {showModal === 'driver' && <DriverModal />}
         {selectedOrder && <OrderDetailModal />}

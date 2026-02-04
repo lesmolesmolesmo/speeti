@@ -107,7 +107,13 @@ const ProductRow = memo(({ title, products, link, icon: Icon }) => {
 ProductRow.displayName = 'ProductRow';
 
 export default function Home() {
-  const { categories, fetchCategories, selectedAddress, user, favorites, shopStatus, fetchShopStatus } = useStore();
+  const categories = useStore(state => state.categories);
+  const fetchCategories = useStore(state => state.fetchCategories);
+  const selectedAddress = useStore(state => state.selectedAddress);
+  const user = useStore(state => state.user);
+  const favorites = useStore(state => state.favorites);
+  const shopStatus = useStore(state => state.shopStatus);
+  const fetchShopStatus = useStore(state => state.fetchShopStatus);
   const [allProducts, setAllProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);

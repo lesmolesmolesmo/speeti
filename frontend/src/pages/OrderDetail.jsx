@@ -14,7 +14,9 @@ const statusSteps = [
 
 export default function OrderDetail() {
   const { id } = useParams();
-  const { currentOrder, fetchOrder, user } = useStore();
+  const currentOrder = useStore(state => state.currentOrder);
+  const fetchOrder = useStore(state => state.fetchOrder);
+  const user = useStore(state => state.user);
   const [message, setMessage] = useState('');
   const [socket, setSocket] = useState(null);
   const [showChat, setShowChat] = useState(false);
@@ -133,7 +135,7 @@ export default function OrderDetail() {
             {currentOrder.estimated_delivery && currentOrder.status !== 'delivered' && (
               <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
                 <Clock size={16} />
-                <span>Geschätzte Ankunft: {new Date(currentOrder.estimated_delivery).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} Uhr</span>
+                <span>Geschätzte Ankunft: {new Date(currentOrder.estimated_delivery).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' })} Uhr</span>
               </div>
             )}
           </section>
@@ -213,7 +215,7 @@ export default function OrderDetail() {
         <section className="bg-white rounded-2xl p-4">
           <h2 className="font-semibold text-gray-900 mb-3">Artikel</h2>
           
-          {currentOrder.items?.map(item => (
+          {currentOrder?.items?.map(item => (
             <div key={item.id} className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0">
               <div className="w-12 h-12 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
                 {item.image ? (
@@ -261,7 +263,7 @@ export default function OrderDetail() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-500">Bestelldatum</span>
                 <span className="font-medium">
-                  {new Date(currentOrder.created_at).toLocaleDateString('de-DE')}
+                  {new Date(currentOrder.created_at).toLocaleDateString('de-DE', { timeZone: 'Europe/Berlin' })}
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
@@ -369,8 +371,8 @@ export default function OrderDetail() {
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px]">
-              {currentOrder.messages?.length > 0 ? (
-                currentOrder.messages.map(msg => (
+              {currentOrder?.messages?.length > 0 ? (
+                currentOrder?.messages.map(msg => (
                   <div 
                     key={msg.id}
                     className={`max-w-[80%] p-3 rounded-2xl text-sm ${

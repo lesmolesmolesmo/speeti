@@ -1,291 +1,332 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require("resend");
 
-// Email transporter (configure with your SMTP)
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: process.env.SMTP_PORT || 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER || 'speeti.delivery@gmail.com',
-      pass: process.env.SMTP_PASS || ''
-    }
-  });
+const resend = new Resend(process.env.RESEND_API_KEY);
+const FROM_EMAIL = process.env.FROM_EMAIL || "Speeti <noreply@speeti.de>";
+
+// Professionelle, lizenzfreie GIFs
+const gifs = {
+  confirmed: "https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif",
+  preparing: "https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif",
+  delivering: "https://media.giphy.com/media/VbnUQpnihPSIgIXuZv/giphy.gif",
+  delivered: "https://media.giphy.com/media/g9582DNuQppxC/giphy.gif",
+  welcome: "https://media.giphy.com/media/l0MYGb1LuZ3n7dRnO/giphy.gif",
 };
 
-// Animated GIFs for emails
-const emailAssets = {
-  deliveryGif: 'https://media.giphy.com/media/xT5LMHxhOfscxPfIfm/giphy.gif',
-  confirmGif: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
-  cookingGif: 'https://media.giphy.com/media/3o7TKUn3XtBLmNFqko/giphy.gif',
-  rocketGif: 'https://media.giphy.com/media/3o7aD4GrHwn8vsGBTa/giphy.gif',
-  partyGif: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
-};
-
-// Base email template
-function emailTemplate(content, preheader = '') {
+// Professional Email Template
+function emailTemplate(content, preheader = "") {
   return `
 <!DOCTYPE html>
-<html>
+<html lang="de">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Speeti</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    body { font-family: 'Inter', -apple-system, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
-    .container { max-width: 600px; margin: 0 auto; background: white; }
-    .header { background: linear-gradient(135deg, #F43F5E 0%, #EC4899 100%); padding: 30px 20px; text-align: center; }
-    .header h1 { color: white; margin: 15px 0 0; font-size: 28px; }
-    .content { padding: 30px 25px; }
-    .gif-container { text-align: center; margin: 20px 0; }
-    .gif-container img { max-width: 200px; border-radius: 12px; }
-    .status-badge { display: inline-block; padding: 8px 20px; border-radius: 50px; font-weight: 600; font-size: 14px; }
-    .status-confirmed { background: #DBEAFE; color: #1D4ED8; }
-    .status-preparing { background: #FEF3C7; color: #D97706; }
-    .status-delivering { background: #D1FAE5; color: #059669; }
-    .status-delivered { background: #ECFDF5; color: #047857; }
-    .order-box { background: #F9FAFB; border-radius: 16px; padding: 20px; margin: 20px 0; }
-    .order-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #E5E7EB; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; line-height: 1.6; color: #333; }
+    .wrapper { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .container { background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .header { background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%); padding: 40px 30px; text-align: center; }
+    .header h1 { color: white; margin: 0; font-size: 32px; font-weight: 700; }
+    .header p { color: rgba(255,255,255,0.9); margin: 8px 0 0 0; font-size: 14px; }
+    .content { padding: 40px 30px; }
+    .button { display: inline-block; background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%); color: white !important; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 16px; margin: 20px 0; }
+    .order-box { background: #fdf2f8; border-radius: 12px; padding: 20px; margin: 24px 0; }
+    .order-item { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid rgba(236,72,153,0.1); }
     .order-item:last-child { border-bottom: none; }
-    .total-row { font-size: 18px; font-weight: 700; color: #F43F5E; }
-    .cta-button { display: inline-block; background: linear-gradient(135deg, #F43F5E 0%, #EC4899 100%); color: white !important; padding: 14px 35px; border-radius: 12px; text-decoration: none; font-weight: 600; margin: 20px 0; }
-    .footer { background: #1F2937; color: #9CA3AF; padding: 30px 20px; text-align: center; font-size: 13px; }
-    .footer a { color: #F43F5E; text-decoration: none; }
-    .address-box { background: #FDF2F8; border-radius: 12px; padding: 15px; margin: 15px 0; }
-    .timeline { margin: 25px 0; }
-    .timeline-item { display: flex; align-items: flex-start; margin-bottom: 15px; }
-    .timeline-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 15px; margin-top: 4px; }
-    .timeline-dot.active { background: #F43F5E; }
-    .timeline-dot.done { background: #10B981; }
-    .timeline-dot.pending { background: #D1D5DB; }
+    .total-row { display: flex; justify-content: space-between; padding: 16px 0 0 0; border-top: 2px solid #ec4899; margin-top: 8px; }
+    .total-row span:last-child { font-size: 24px; font-weight: 700; color: #ec4899; }
+    .status-badge { display: inline-block; padding: 10px 20px; border-radius: 50px; font-weight: 600; font-size: 14px; }
+    .badge-confirmed { background: #dcfce7; color: #166534; }
+    .badge-preparing { background: #fef3c7; color: #92400e; }
+    .badge-delivering { background: #dbeafe; color: #1e40af; }
+    .badge-delivered { background: #d1fae5; color: #065f46; }
+    .gif-container { text-align: center; margin: 24px 0; }
+    .gif-container img { max-width: 200px; border-radius: 12px; }
+    .info-box { background: #f3f4f6; border-radius: 12px; padding: 20px; margin: 24px 0; }
+    .support-box { background: linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%); border-radius: 12px; padding: 24px; margin: 24px 0; text-align: center; border: 1px solid #e5e7eb; }
+    .footer { background: #1f2937; color: #9ca3af; padding: 32px 30px; text-align: center; font-size: 12px; }
+    .footer a { color: #d1d5db; text-decoration: none; }
+    .footer-links { margin: 16px 0; }
+    .footer-links a { margin: 0 12px; }
+    .footer-company { margin-top: 20px; padding-top: 20px; border-top: 1px solid #374151; font-size: 11px; color: #6b7280; }
+    .auto-email { background: #f9fafb; padding: 12px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #e5e7eb; }
   </style>
 </head>
 <body>
-  <div style="display:none;max-height:0;overflow:hidden;">${preheader}</div>
-  <div class="container">
-    <div class="header">
-      <div style="font-size: 36px;">⚡</div>
-      <h1>Speeti</h1>
-    </div>
-    ${content}
-    <div class="footer">
-      <p style="margin-bottom: 15px;">Made with ❤️ in Münster</p>
-      <p style="margin-top: 20px; font-size: 11px; color: #6B7280;">
-        Speeti · Münster, Deutschland<br>
-        <a href="https://speeti.de/datenschutz">Datenschutz</a>
-      </p>
+  <span style="display:none;max-height:0;overflow:hidden;">${preheader}</span>
+  <div class="wrapper">
+    <div class="container">
+      <div class="header">
+        <h1>🚴 Speeti</h1>
+        <p>Blitzschnelle Lieferung in Münster</p>
+      </div>
+      <div class="content">
+        ${content}
+      </div>
+      
+      <div style="padding: 0 30px 30px 30px;">
+        <div style="background:linear-gradient(135deg,#fdf2f8 0%,#f0f9ff 100%);border-radius:16px;padding:28px;text-align:center;border:1px solid #fce7f3;">
+          <p style="margin:0 0 6px 0;font-size:24px;">💬</p>
+          <h3 style="margin:0 0 8px 0;color:#1f2937;font-size:18px;font-weight:700;">Fragen zu deiner Bestellung?</h3>
+          <p style="margin:0 0 24px 0;color:#6b7280;font-size:14px;">Unser Support-Team hilft dir gerne weiter!</p>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+            <tr>
+              <td style="padding:0 6px 12px 6px;">
+                <a href="https://speeti.de/support" style="display:inline-block;background:#ec4899;color:#ffffff;text-decoration:none;font-weight:600;font-size:13px;padding:12px 24px;border-radius:10px;min-width:100px;">💬 Live-Chat</a>
+              </td>
+              <td style="padding:0 6px 12px 6px;">
+                <a href="mailto:info@speeti.de" style="display:inline-block;background:#3b82f6;color:#ffffff;text-decoration:none;font-weight:600;font-size:13px;padding:12px 24px;border-radius:10px;min-width:100px;">📧 E-Mail</a>
+              </td>
+              <td style="padding:0 6px 12px 6px;">
+                <a href="https://speeti.de/faq" style="display:inline-block;background:#8b5cf6;color:#ffffff;text-decoration:none;font-weight:600;font-size:13px;padding:12px 24px;border-radius:10px;min-width:100px;">❓ FAQ</a>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </div>
+      
+      <div class="footer">
+        <div style="font-size:20px;font-weight:700;color:white;margin-bottom:16px;">🚴 Speeti</div>
+        <p>Dein Lieferservice für Münster – in 15 Minuten bei dir!</p>
+        
+        <div class="footer-links">
+          <a href="https://speeti.de">Website</a>
+          <a href="https://speeti.de/datenschutz">Datenschutz</a>
+          <a href="https://speeti.de/impressum">Impressum</a>
+          <a href="https://speeti.de/agb">AGB</a>
+        </div>
+        
+        <div class="footer-company">
+          <p style="margin:4px 0;"><strong>Speeti GmbH</strong> (i.G.)</p>
+          <p style="margin:4px 0;">Musterstraße 123 • 48149 Münster</p>
+          <p style="margin:4px 0;">Geschäftsführer: Max Mustermann</p>
+          <p style="margin:4px 0;">Handelsregister: AG Münster (in Gründung)</p>
+          <p style="margin:4px 0;">USt-IdNr.: DE000000000</p>
+        </div>
+      </div>
+      
+      <div class="auto-email">
+        Diese E-Mail wurde automatisch erstellt. Bitte antworte nicht direkt auf diese Nachricht.<br>
+        Bei Fragen wende dich an <a href="mailto:info@speeti.de" style="color:#ec4899;">info@speeti.de</a>
+      </div>
     </div>
   </div>
 </body>
 </html>`;
 }
 
-// Order confirmation email
-function orderConfirmationEmail(order, items) {
-  const itemsHtml = items.map(item => `
-    <div class="order-item">
-      <span>${item.quantity}x ${item.name}</span>
-      <span>${(item.price * item.quantity).toFixed(2)} €</span>
-    </div>
-  `).join('');
-  
-  const subtotal = (order.total - (order.delivery_fee || 2.99)).toFixed(2);
-  
-  return emailTemplate(`
-    <div class="content">
-      <div class="gif-container">
-        <img src="${emailAssets.confirmGif}" alt="Bestätigt!" />
-      </div>
-      
-      <h2 style="text-align: center; color: #1F2937; margin-bottom: 5px;">Bestellung bestätigt! 🎉</h2>
-      <p style="text-align: center; color: #6B7280;">Bestellung #${order.id} · ${new Date(order.created_at).toLocaleDateString('de-DE')}</p>
-      
-      <div style="text-align: center; margin: 25px 0;">
-        <span class="status-badge status-confirmed">✓ Bestätigt</span>
-      </div>
-      
-      <p style="color: #4B5563;">Hi ${order.customer_name}! 👋</p>
-      <p style="color: #4B5563;">Deine Bestellung ist eingegangen und wird jetzt vorbereitet. Du erhältst eine weitere E-Mail, sobald dein Fahrer unterwegs ist!</p>
-      
-      <div class="order-box">
-        <h3 style="margin-top: 0; color: #1F2937;">📦 Deine Bestellung</h3>
-        ${itemsHtml}
-        <div style="border-top: 2px solid #E5E7EB; margin-top: 15px; padding-top: 15px;">
-          <div class="order-item">
-            <span>Zwischensumme</span>
-            <span>${subtotal} €</span>
-          </div>
-          <div class="order-item">
-            <span>Lieferung</span>
-            <span>${(order.delivery_fee || 2.99).toFixed(2)} €</span>
-          </div>
-          <div class="order-item total-row">
-            <span>Gesamt</span>
-            <span>${order.total.toFixed(2)} €</span>
-          </div>
-        </div>
-      </div>
-      
-      <div class="address-box">
-        <strong>📍 Lieferadresse:</strong><br>
-        ${order.street} ${order.house_number}<br>
-        ${order.postal_code} ${order.city}
-        ${order.instructions ? `<br><em style="color: #F43F5E;">📝 ${order.instructions}</em>` : ''}
-      </div>
-      
-      <div style="text-align: center;">
-        <a href="https://speeti.de/orders/${order.id}" class="cta-button">Bestellung verfolgen →</a>
-      </div>
-      
-      <p style="color: #9CA3AF; font-size: 13px; text-align: center; margin-top: 30px;">
-        Geschätzte Lieferzeit: <strong>15-20 Minuten</strong>
-      </p>
-    </div>
-  `, `Deine Bestellung #${order.id} wurde bestätigt! 🎉`);
-}
-
-// Delivery status email
-function deliveryStatusEmail(order, status) {
-  const statusConfig = {
-    preparing: {
-      title: 'Wird vorbereitet! 👨‍🍳',
-      message: 'Deine Bestellung wird gerade liebevoll zusammengestellt.',
-      badge: 'status-preparing',
-      badgeText: '🔄 Wird vorbereitet',
-      gif: emailAssets.cookingGif
-    },
-    picking: {
-      title: 'Wird vorbereitet! 👨‍🍳',
-      message: 'Deine Bestellung wird gerade zusammengestellt.',
-      badge: 'status-preparing',
-      badgeText: '📦 Wird gepackt',
-      gif: emailAssets.cookingGif
-    },
-    delivering: {
-      title: 'Fahrer ist unterwegs! 🛵',
-      message: 'Dein Fahrer hat deine Bestellung und ist auf dem Weg zu dir!',
-      badge: 'status-delivering',
-      badgeText: '🚀 Unterwegs',
-      gif: emailAssets.deliveryGif
-    },
-    delivered: {
-      title: 'Geliefert! 🎉',
-      message: 'Deine Bestellung wurde erfolgreich zugestellt. Guten Appetit!',
-      badge: 'status-delivered', 
-      badgeText: '✅ Geliefert',
-      gif: emailAssets.partyGif
-    }
-  };
-  
-  const config = statusConfig[status] || statusConfig.preparing;
-  
-  const isDone = (s) => {
-    const order = ['confirmed', 'preparing', 'picking', 'delivering', 'delivered'];
-    return order.indexOf(status) >= order.indexOf(s);
-  };
-  
-  return emailTemplate(`
-    <div class="content">
-      <div class="gif-container">
-        <img src="${config.gif}" alt="${config.title}" />
-      </div>
-      
-      <h2 style="text-align: center; color: #1F2937;">${config.title}</h2>
-      
-      <div style="text-align: center; margin: 20px 0;">
-        <span class="status-badge ${config.badge}">${config.badgeText}</span>
-      </div>
-      
-      <p style="color: #4B5563; text-align: center;">${config.message}</p>
-      
-      <div class="timeline">
-        <div class="timeline-item">
-          <div class="timeline-dot done"></div>
-          <div><strong>Bestätigt</strong><br><small style="color: #9CA3AF;">Bestellung eingegangen</small></div>
-        </div>
-        <div class="timeline-item">
-          <div class="timeline-dot ${isDone('preparing') ? 'done' : 'pending'}"></div>
-          <div><strong>Vorbereitung</strong><br><small style="color: #9CA3AF;">Wird zusammengestellt</small></div>
-        </div>
-        <div class="timeline-item">
-          <div class="timeline-dot ${status === 'delivering' ? 'active' : isDone('delivering') ? 'done' : 'pending'}"></div>
-          <div><strong>Unterwegs</strong><br><small style="color: #9CA3AF;">Fahrer auf dem Weg</small></div>
-        </div>
-        <div class="timeline-item">
-          <div class="timeline-dot ${status === 'delivered' ? 'done' : 'pending'}"></div>
-          <div><strong>Geliefert</strong><br><small style="color: #9CA3AF;">Bei dir angekommen</small></div>
-        </div>
-      </div>
-      
-      <div class="address-box">
-        <strong>📍 Lieferadresse:</strong><br>
-        ${order.street} ${order.house_number}, ${order.postal_code} ${order.city}
-      </div>
-      
-      <div style="text-align: center;">
-        <a href="https://speeti.de/orders/${order.id}" class="cta-button">Live verfolgen →</a>
-      </div>
-    </div>
-  `, `Update zu deiner Bestellung #${order.id}: ${config.title}`);
-}
-
-// Waitlist welcome email
-function waitlistEmail(email, city) {
-  return emailTemplate(`
-    <div class="content">
-      <div class="gif-container">
-        <img src="${emailAssets.rocketGif}" alt="Coming Soon!" />
-      </div>
-      
-      <h2 style="text-align: center; color: #1F2937;">Du bist auf der Warteliste! 🚀</h2>
-      
-      <p style="color: #4B5563; text-align: center;">
-        Wir sind noch nicht in <strong>${city}</strong>, aber wir arbeiten daran!<br>
-        Du wirst als Erster informiert, sobald wir dort starten.
-      </p>
-      
-      <div style="background: #FDF2F8; border-radius: 16px; padding: 25px; margin: 25px 0; text-align: center;">
-        <div style="font-size: 48px; margin-bottom: 10px;">🏙️</div>
-        <h3 style="color: #1F2937; margin: 0;">${city}</h3>
-        <p style="color: #F43F5E; margin: 5px 0 0; font-weight: 600;">Coming Soon!</p>
-      </div>
-      
-      <p style="color: #9CA3AF; font-size: 13px; text-align: center;">
-        Tipp: Folge uns auf Instagram <a href="https://instagram.com/speeti.de" style="color: #F43F5E;">@speeti.de</a> für Updates!
-      </p>
-    </div>
-  `, `Du bist auf unserer Warteliste für ${city}! 🎉`);
-}
-
-// Send email helper
 async function sendEmail(to, subject, html) {
-  if (!process.env.SMTP_PASS) {
-    console.log('📧 Email would be sent to:', to, '- Subject:', subject);
-    console.log('   (SMTP not configured, email skipped)');
-    return { sent: false, reason: 'SMTP not configured' };
+  if (!process.env.RESEND_API_KEY) {
+    console.log("⚠️ RESEND_API_KEY not set");
+    return { success: false, error: "No API key" };
   }
   
   try {
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from: '"Speeti 🚀" <speeti.delivery@gmail.com>',
-      to,
-      subject,
-      html
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: [to],
+      subject: subject,
+      html: html,
     });
-    console.log('✅ Email sent to:', to);
-    return { sent: true };
+    
+    if (error) {
+      console.error("❌ Email error:", error);
+      return { success: false, error };
+    }
+    
+    console.log("✅ Email sent to:", to, "ID:", data.id);
+    return { success: true, id: data.id };
   } catch (err) {
-    console.error('❌ Email failed:', err.message);
-    return { sent: false, reason: err.message };
+    console.error("❌ Email exception:", err);
+    return { success: false, error: err.message };
   }
+}
+
+async function sendOrderConfirmation(order, customer, items) {
+  const itemsHtml = items.map(item => `
+    <div class="order-item">
+      <span style="color:#374151;">${item.quantity}× ${item.name}</span>
+      <span style="font-weight:600;color:#1f2937;">${(item.price * item.quantity).toFixed(2)} €</span>
+    </div>
+  `).join("");
+  
+  const content = `
+    <div class="gif-container">
+      <img src="${gifs.confirmed}" alt="Bestellung bestätigt!">
+    </div>
+    
+    <div style="text-align:center;">
+      <span class="status-badge badge-confirmed">✅ Bestellung bestätigt</span>
+    </div>
+    
+    <h2 style="text-align:center;margin-top:24px;color:#1f2937;">Vielen Dank für deine Bestellung, ${customer.name || ""}! 🎉</h2>
+    
+    <p style="text-align:center;color:#4b5563;">
+      Wir haben deine Bestellung erhalten und machen uns sofort an die Arbeit. 
+      Du erhältst eine weitere E-Mail, sobald dein Fahrer unterwegs ist.
+    </p>
+    
+    <div class="order-box">
+      <div style="display:flex;justify-content:space-between;margin-bottom:16px;">
+        <span style="color:#6b7280;">Bestellnummer</span>
+        <span style="font-weight:700;color:#ec4899;">#${order.order_number}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:#6b7280;">Lieferadresse</span>
+        <span style="font-weight:500;color:#1f2937;text-align:right;">${order.address}</span>
+      </div>
+    </div>
+    
+    <h3 style="color:#1f2937;margin-bottom:16px;">📦 Deine Bestellung</h3>
+    ${itemsHtml}
+    <div class="total-row">
+      <span style="font-weight:600;color:#374151;">Gesamtsumme</span>
+      <span>${order.total.toFixed(2)} €</span>
+    </div>
+    
+    <div style="text-align:center;margin-top:32px;">
+      <a href="https://speeti.de/track/${order.order_number}?token=${order.track_token}" class="button">
+        📍 Bestellung verfolgen
+      </a>
+    </div>
+    
+    <div class="info-box">
+      <h3 style="margin:0 0 12px 0;color:#374151;">⚡ Geschätzte Lieferzeit</h3>
+      <p style="margin:0;color:#6b7280;"><strong>15-20 Minuten</strong> – Wir beeilen uns!</p>
+    </div>
+  `;
+  
+  return sendEmail(
+    customer.email,
+    `Bestellung #${order.order_number} bestätigt! 🎉`,
+    emailTemplate(content, `Danke für deine Bestellung bei Speeti! Lieferung in 15-20 Min.`)
+  );
+}
+
+async function sendStatusUpdate(order, customer, newStatus) {
+  const config = {
+    preparing: { 
+      emoji: "👨‍🍳", 
+      title: "Deine Bestellung wird vorbereitet",
+      text: "Unser Team packt gerade alles für dich zusammen. Gleich geht's los!",
+      badge: "badge-preparing",
+      badgeText: "👨‍🍳 In Zubereitung",
+      gif: gifs.preparing
+    },
+    delivering: { 
+      emoji: "🚴", 
+      title: "Dein Fahrer ist unterwegs!",
+      text: "Halte schon mal das Kleingeld bereit – oder lehn dich zurück, wenn du online bezahlt hast. Dein Fahrer düst durch Münster!",
+      badge: "badge-delivering",
+      badgeText: "🚴 Unterwegs zu dir",
+      gif: gifs.delivering
+    },
+    delivered: { 
+      emoji: "🎉", 
+      title: "Guten Appetit!",
+      text: "Deine Bestellung wurde erfolgreich zugestellt. Wir hoffen, es schmeckt! Bis zum nächsten Mal 💕",
+      badge: "badge-delivered",
+      badgeText: "✅ Zugestellt",
+      gif: gifs.delivered
+    },
+  };
+  
+  const status = config[newStatus] || config.preparing;
+  
+  const deliveredExtra = newStatus === 'delivered' ? `
+    <div style="text-align:center;margin-top:24px;">
+      <p style="font-size:18px;color:#1f2937;">⭐ Wie war deine Erfahrung?</p>
+      <a href="https://speeti.de/bewertung/${order.order_number}?token=${order.track_token}" class="button" style="background:linear-gradient(135deg,#f59e0b,#d97706);">
+        ⭐ Jetzt bewerten
+      </a>
+    </div>
+    <div class="info-box">
+      <h3 style="margin:0 0 12px 0;color:#374151;">🎁 Bestell wieder!</h3>
+      <p style="margin:0;color:#6b7280;">Nutze Code <strong style="color:#ec4899;">COMEBACK5</strong> für 5% auf deine nächste Bestellung.</p>
+    </div>
+  ` : `
+    <div style="text-align:center;margin-top:24px;">
+      <a href="https://speeti.de/track/${order.order_number}?token=${order.track_token}" class="button">
+        📍 Live verfolgen
+      </a>
+    </div>
+  `;
+  
+  const content = `
+    <div class="gif-container">
+      <img src="${status.gif}" alt="${status.title}">
+    </div>
+    
+    <div style="text-align:center;">
+      <span class="status-badge ${status.badge}">${status.badgeText}</span>
+    </div>
+    
+    <h2 style="text-align:center;margin-top:24px;color:#1f2937;">${status.title}</h2>
+    
+    <p style="text-align:center;font-size:16px;color:#4b5563;">
+      ${status.text}
+    </p>
+    
+    <div class="order-box" style="text-align:center;">
+      <p style="margin:0;color:#6b7280;">Bestellnummer</p>
+      <p style="margin:8px 0 0 0;font-size:24px;font-weight:700;color:#ec4899;">#${order.order_number}</p>
+    </div>
+    
+    ${deliveredExtra}
+  `;
+  
+  return sendEmail(
+    customer.email,
+    `${status.emoji} Bestellung #${order.order_number}: ${status.badgeText.replace(/[^\w\säöüÄÖÜß]/g, '').trim()}`,
+    emailTemplate(content, `${status.title} – Bestellung #${order.order_number}`)
+  );
+}
+
+async function sendWelcomeEmail(user) {
+  const content = `
+    <div class="gif-container">
+      <img src="${gifs.welcome}" alt="Willkommen!">
+    </div>
+    
+    <h2 style="text-align:center;color:#1f2937;">Willkommen bei Speeti, ${user.name || ""}! 🎉</h2>
+    
+    <p style="text-align:center;font-size:16px;color:#4b5563;">
+      Schön, dass du dabei bist! Ab jetzt bekommst du alles, was du brauchst, 
+      in nur 15 Minuten direkt vor deine Tür geliefert.
+    </p>
+    
+    <div style="background:linear-gradient(135deg,#ec4899,#f43f5e);color:white;padding:32px;border-radius:16px;text-align:center;margin:32px 0;">
+      <p style="margin:0;font-size:12px;opacity:0.9;">DEIN WILLKOMMENSGESCHENK</p>
+      <p style="font-size:40px;font-weight:800;margin:12px 0;letter-spacing:2px;">WELCOME10</p>
+      <p style="margin:0;font-size:16px;">10% Rabatt auf deine erste Bestellung!</p>
+    </div>
+    
+    <div style="text-align:center;">
+      <a href="https://speeti.de" class="button">
+        🛒 Jetzt shoppen
+      </a>
+    </div>
+    
+    <div class="info-box">
+      <h3 style="margin:0 0 12px 0;color:#374151;">🚀 So funktioniert Speeti</h3>
+      <p style="margin:0;color:#6b7280;">1️⃣ Wähle deine Lieblingsprodukte<br>
+         2️⃣ Bezahle bequem online oder bar<br>
+         3️⃣ Lehn dich zurück – wir sind in 15 Min. da!</p>
+    </div>
+  `;
+  
+  return sendEmail(
+    user.email,
+    "Willkommen bei Speeti! 🚴 Hier ist dein 10% Gutschein",
+    emailTemplate(content, "Dein Willkommensgeschenk wartet: 10% Rabatt mit WELCOME10!")
+  );
 }
 
 module.exports = {
   sendEmail,
-  orderConfirmationEmail,
-  deliveryStatusEmail,
-  waitlistEmail,
-  emailAssets
+  sendOrderConfirmation,
+  sendStatusUpdate,
+  sendWelcomeEmail,
+  waitlistEmail: (email, city) => emailTemplate(`<div style="text-align:center;padding:24px 0;"><div style="font-size:64px;margin-bottom:16px;">🚀</div><h1 style="color:#1f2937;margin:0 0 8px 0;">Du bist auf der Warteliste!</h1><p style="color:#6b7280;margin:0;">Wir benachrichtigen dich, sobald Speeti in ${city} startet.</p></div>`, "Du bist auf der Warteliste für Speeti!"),
+  emailTemplate,
 };
