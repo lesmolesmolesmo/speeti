@@ -1,15 +1,51 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, Package, LogOut, ChevronRight, User, Phone, Mail, Settings, HelpCircle, Shield, Headphones } from 'lucide-react';
+import { ArrowLeft, MapPin, Package, LogOut, ChevronRight, User, Phone, Mail, Settings, HelpCircle, Shield, Headphones, Loader2 } from 'lucide-react';
 import { useStore } from '../store';
 
 export default function Profile() {
   const navigate = useNavigate();
   const { user, addresses, fetchAddresses, logout } = useStore();
+  const [loading, setLoading] = useState(true);
+  const [orderCount, setOrderCount] = useState(0);
 
   useEffect(() => {
-    fetchAddresses();
+    // Wait for hydration from localStorage
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 100);
+    return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      navigate('/login?redirect=/profile');
+      return;
+    }
+    if (user) {
+      fetchAddresses();
+      // Fetch order count
+      import('../store').then(({ api }) => {
+        api.get('/orders').then(({ data }) => {
+          setOrderCount(data?.length || 0);
+        }).catch(() => {});
+      });
+    }
+  }, [user, loading]);
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
+      </div>
+    );
+  }
+
+  // Not logged in
+  if (!user) {
+    return null;
+  }
 
   const handleLogout = () => {
     logout();
@@ -42,7 +78,7 @@ export default function Profile() {
         <section className="flex gap-4">
           <div className="flex-1 bg-white rounded-2xl p-4 text-center">
             <Package className="mx-auto mb-2 text-primary-500" size={24} />
-            <p className="text-2xl font-bold text-gray-900">0</p>
+            <p className="text-2xl font-bold text-gray-900">{orderCount}</p>
             <p className="text-xs text-gray-500">Bestellungen</p>
           </div>
           <div className="flex-1 bg-white rounded-2xl p-4 text-center">

@@ -140,9 +140,15 @@ export const useStore = create(
       orders: [],
       currentOrder: null,
       
-      createOrder: async (addressId, paymentMethod, notes) => {
+      createOrder: async (addressId, paymentMethod, notes, scheduledTime = null) => {
         const items = get().cart.map(item => ({ product_id: item.id, quantity: item.quantity }));
-        const { data } = await api.post('/orders', { address_id: addressId, items, payment_method: paymentMethod, notes });
+        const { data } = await api.post('/orders', { 
+          address_id: addressId, 
+          items, 
+          payment_method: paymentMethod, 
+          notes,
+          scheduled_time: scheduledTime
+        });
         get().clearCart();
         return data;
       },
@@ -156,15 +162,62 @@ export const useStore = create(
         const { data } = await api.get(`/orders/${id}`);
         set({ currentOrder: data });
         return data;
+      },
+
+      // ============ FAVORITEN ============
+      favorites: [],
+      
+      toggleFavorite: (productId) => {
+        const favorites = get().favorites;
+        if (favorites.includes(productId)) {
+          set({ favorites: favorites.filter(id => id !== productId) });
+        } else {
+          set({ favorites: [...favorites, productId] });
+        }
+      },
+      
+      isFavorite: (productId) => get().favorites.includes(productId),
+      
+      // ============ SHOP STATUS ============
+      shopStatus: {
+        open: true,
+        reason: 'schedule',
+        message: 'Geöffnet',
+        openingTime: '08:00',
+        closingTime: '22:00',
+        manualOverride: null
+      },
+      
+      fetchShopStatus: async () => {
+        try {
+          const { data } = await api.get('/shop/status');
+          set({ shopStatus: data });
+          return data;
+        } catch (e) {
+          console.error('Shop status fetch failed:', e);
+          return get().shopStatus;
+        }
+      },
+      
+      toggleShop: async (action) => {
+        try {
+          const { data } = await api.post('/admin/shop/toggle', { action });
+          set({ shopStatus: { ...get().shopStatus, ...data } });
+          return data;
+        } catch (e) {
+          console.error('Shop toggle failed:', e);
+          throw e;
+        }
       }
     }),
     {
       name: 'speeti-storage',
-      // WICHTIG: user UND token persistieren!
+      // WICHTIG: user, token UND favorites persistieren!
       partialize: (state) => ({ 
         cart: state.cart, 
         token: state.token,
-        user: state.user 
+        user: state.user,
+        favorites: state.favorites
       })
     }
   )

@@ -113,3 +113,50 @@ html {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } } .animate-slideUp { animation: slideUp 0.3s ease-out; }
+
+/* Mobile viewport fix */
+html, body, #root {
+  height: 100%;
+  min-height: 100dvh;
+}
+
+/* Prevent iOS bounce */
+#root {
+  overflow-x: hidden;
+}
+
+/* Modal backdrop - higher z-index than nav */
+.modal-backdrop {
+  z-index: 60;
+}
+
+/* Safe area for modals on mobile */
+.modal-safe-bottom {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 80px);
+}
+
+@media (min-width: 640px) {
+  .modal-safe-bottom {
+    padding-bottom: 16px;
+  }
+}
+
+/* Prevent text selection on interactive elements */
+button, a, [role='button'] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Smooth transitions */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Fix iOS input zoom */
+@media screen and (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}

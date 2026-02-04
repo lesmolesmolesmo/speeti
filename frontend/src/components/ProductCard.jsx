@@ -1,13 +1,21 @@
-import { Plus, Minus, Check } from 'lucide-react';
+import { Plus, Minus, Check, Heart } from 'lucide-react';
 import { useState, memo } from 'react';
 import { useStore } from '../store';
 import { showToast } from './Toast';
 
 const ProductCard = memo(function ProductCard({ product, compact = false }) {
-  const { cart, addToCart, removeFromCart } = useStore();
+  const { cart, addToCart, removeFromCart, favorites, toggleFavorite } = useStore();
   const [imageError, setImageError] = useState(false);
   const inCart = cart.find(item => item.id === product.id);
   const quantity = inCart?.quantity || 0;
+  const isFavorite = favorites.includes(product.id);
+
+  const handleFavorite = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleFavorite(product.id);
+    showToast(isFavorite ? 'Von Favoriten entfernt' : 'Zu Favoriten hinzugefügt', 'heart');
+  };
 
   const handleAdd = (e) => {
     e.preventDefault();
@@ -49,6 +57,17 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
               -{discountPercent}%
             </span>
           )}
+
+          {/* Favorite Button */}
+          <button
+            onClick={handleFavorite}
+            className="absolute top-2 right-2 w-7 h-7 bg-white/90 backdrop-blur rounded-full flex items-center justify-center shadow-sm hover:scale-110 transition-transform"
+          >
+            <Heart 
+              size={14} 
+              className={isFavorite ? 'fill-rose-500 text-rose-500' : 'text-gray-400'} 
+            />
+          </button>
 
           {/* Add Button */}
           <div className="absolute bottom-2 right-2">
@@ -122,6 +141,17 @@ const ProductCard = memo(function ProductCard({ product, compact = false }) {
             -{discountPercent}%
           </span>
         )}
+
+        {/* Favorite Button */}
+        <button
+          onClick={handleFavorite}
+          className="absolute top-3 right-3 w-9 h-9 bg-white/90 backdrop-blur rounded-full flex items-center justify-center shadow-md hover:scale-110 transition-transform opacity-0 group-hover:opacity-100"
+        >
+          <Heart 
+            size={18} 
+            className={isFavorite ? 'fill-rose-500 text-rose-500' : 'text-gray-400 hover:text-rose-400'} 
+          />
+        </button>
 
         {/* Hover Overlay */}
         <div className="absolute bottom-0 left-0 right-0 p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-200">

@@ -36,8 +36,8 @@ function App() {
   const { user, token, fetchUser, fetchCategories } = useStore();
   const location = useLocation();
   
-  // Hide nav on admin/driver/support pages (they have their own layout)
-  const hideNav = ['/admin', '/driver', '/support'].some(p => location.pathname.startsWith(p));
+  // Hide nav on admin/driver/support/warehouse pages (they have their own layout)
+  const hideNav = ['/admin', '/driver', '/support', '/warehouse'].some(p => location.pathname.startsWith(p));
   const isFullscreenPage = ['/admin', '/driver', '/login', '/support', '/warehouse'].some(p => location.pathname.startsWith(p));
 
   useEffect(() => {

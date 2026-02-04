@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, Package, Grid3X3, ShoppingBag, Users, Truck, Settings, 
@@ -7,7 +7,7 @@ import {
   Calendar, BarChart3, ArrowUpRight, ArrowDownRight, Filter, Download,
   Printer, RefreshCw, Bell, ChevronDown, ChevronRight, Copy, ExternalLink,
   Image, Tag, Scale, Barcode, Info, Percent, Box, Thermometer, Headphones,
-  MessageCircle, Bot, User, Send, Warehouse, ScanLine, Upload
+  MessageCircle, Bot, User, Send, Warehouse, ScanLine, Upload, LogOut, Loader2, Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useStore, api } from '../store';
@@ -37,7 +37,7 @@ const orderStatuses = {
 
 export default function Admin() {
   const navigate = useNavigate();
-  const { user } = useStore();
+  const { user, logout } = useStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState({});
   const [orders, setOrders] = useState([]);
@@ -54,6 +54,36 @@ export default function Admin() {
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [ticketMessages, setTicketMessages] = useState([]);
   const [supportReply, setSupportReply] = useState('');
+  const [productForm, setProductForm] = useState({
+    name: '',
+    description: '',
+    price: '',
+    original_price: '',
+    category_id: '',
+    unit: 'Stück',
+    unit_amount: '1',
+    image: '',
+    sku: '',
+    ean: '',
+    weight: '',
+    weight_unit: 'g',
+    stock_count: 100,
+    min_order: 1,
+    max_order: 99,
+    tax_rate: 19,
+    deposit: 0,
+    storage_temp: '',
+    allergens: '',
+    ingredients: '',
+    nutrition_info: '',
+    origin: '',
+    brand: '',
+    featured: false,
+    in_stock: true,
+    visible: true
+  });
+  const [productSection, setProductSection] = useState('basic');
+  const [autoFillLoading, setAutoFillLoading] = useState(false);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -133,7 +163,39 @@ export default function Admin() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <QuickAction icon={Plus} label="Neues Produkt" onClick={() => { setEditItem(null); setShowModal('product'); }} />
+        <QuickAction icon={Plus} label="Neues Produkt" onClick={() => { 
+    setEditItem(null); 
+    setProductForm({
+      name: '',
+      description: '',
+      price: '',
+      original_price: '',
+      category_id: categories[0]?.id || '',
+      unit: 'Stück',
+      unit_amount: '1',
+      image: '',
+      sku: '',
+      ean: '',
+      weight: '',
+      weight_unit: 'g',
+      stock_count: 100,
+      min_order: 1,
+      max_order: 99,
+      tax_rate: 19,
+      deposit: 0,
+      storage_temp: '',
+      allergens: '',
+      ingredients: '',
+      nutrition_info: '',
+      origin: '',
+      brand: '',
+      featured: false,
+      in_stock: true,
+      visible: true
+    });
+    setProductSection('basic');
+    setShowModal('product'); 
+  }} />
         <QuickAction icon={Truck} label="Neuer Fahrer" onClick={() => { setEditItem(null); setShowModal('driver'); }} />
         <QuickAction icon={Grid3X3} label="Neue Kategorie" onClick={() => { setEditItem(null); setShowModal('category'); }} />
         <QuickAction icon={Download} label="Bericht exportieren" />
@@ -295,7 +357,7 @@ export default function Admin() {
                         <option key={key} value={key}>{val.label}</option>
                       ))}
                     </select>
-                    <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-500">
+                    <button onClick={() => setSelectedOrder(order)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="Details & Drucken">
                       <Printer size={16} />
                     </button>
                     <button 
@@ -328,123 +390,150 @@ export default function Admin() {
   };
 
   // ============ PRODUCTS ============
-  const ProductsTab = () => {
-    const filteredProducts = products.filter(p => 
-      p.name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+  // Memoized filtered products to prevent unnecessary re-renders
+  const filteredProducts = useMemo(() => 
+    products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())),
+    [products, searchQuery]
+  );
 
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold">Produkte</h2>
-            <p className="text-sm text-gray-500">{products.length} Produkte im Sortiment</p>
-          </div>
-          <button
-            onClick={() => { setEditItem(null); setShowModal('product'); }}
-            className="flex items-center gap-2 bg-primary-500 text-white px-4 py-2 rounded-xl hover:bg-primary-600 transition-colors"
-          >
-            <Plus size={20} /> Neues Produkt
-          </button>
+  // Products content as JSX (not a component) to prevent focus loss on re-render
+  const productsTab = (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Produkte</h2>
+          <p className="text-sm text-gray-500">{products.length} Produkte im Sortiment</p>
         </div>
-
-        <div className="relative">
-          <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Produkt suchen..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-          />
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Produkt</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Kategorie</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Preis</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Bestand</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Status</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Aktionen</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredProducts.map(product => (
-                <tr key={product.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
-                        {product.image ? (
-                          <img src={product.image} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <Package size={20} className="text-gray-400" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-medium text-gray-900">{product.name}</p>
-                        <p className="text-xs text-gray-500">{product.unit_amount} {product.unit}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{product.category_name}</td>
-                  <td className="px-4 py-3 font-semibold text-gray-900">{product.price.toFixed(2)}€</td>
-                  <td className="px-4 py-3 text-sm">{product.stock_count || '∞'}</td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-1 rounded-full ${product.in_stock ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                      {product.in_stock ? 'Verfügbar' : 'Ausverkauft'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => { setEditItem(product); setShowModal('product'); }} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500">
-                      <Edit2 size={16} />
-                    </button>
-                    <button onClick={async () => { if(confirm('Löschen?')) { await api.delete(`/admin/products/${product.id}`); loadData(); }}} className="p-2 hover:bg-red-50 rounded-lg text-red-500">
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <button
+          onClick={() => { setEditItem(null); setShowModal('product'); }}
+          className="flex items-center gap-2 bg-primary-500 text-white px-4 py-2 rounded-xl hover:bg-primary-600 transition-colors"
+        >
+          <Plus size={20} /> Neues Produkt
+        </button>
       </div>
-    );
-  };
+
+      <div className="relative">
+        <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          type="text"
+          placeholder="Produkt suchen..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+        />
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Produkt</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Kategorie</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Preis</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Bestand</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Status</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Aktionen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredProducts.map(product => (
+              <tr key={product.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
+                      {product.image ? (
+                        <img src={product.image} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Package size={20} className="text-gray-400" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900">{product.name}</p>
+                      <p className="text-xs text-gray-500">{product.unit_amount} {product.unit}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600">{product.category_name}</td>
+                <td className="px-4 py-3 font-semibold text-gray-900">{product.price.toFixed(2)}€</td>
+                <td className="px-4 py-3 text-sm">{product.stock_count || '∞'}</td>
+                <td className="px-4 py-3">
+                  <span className={`text-xs px-2 py-1 rounded-full ${product.in_stock ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {product.in_stock ? 'Verfügbar' : 'Ausverkauft'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button onClick={() => { setEditItem(product); setShowModal('product'); }} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500">
+                    <Edit2 size={16} />
+                  </button>
+                  <button onClick={async () => { if(confirm('Löschen?')) { await api.delete(`/admin/products/${product.id}`); loadData(); }}} className="p-2 hover:bg-red-50 rounded-lg text-red-500">
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 
   // ============ PRODUCT MODAL - FULL FEATURED ============
   const ProductModal = () => {
-    const [form, setForm] = useState(editItem || {
-      name: '',
-      description: '',
-      price: '',
-      original_price: '',
-      category_id: categories[0]?.id,
-      unit: 'Stück',
-      unit_amount: '1',
-      image: '',
-      sku: '',
-      ean: '',
-      weight: '',
-      weight_unit: 'g',
-      stock_count: 100,
-      min_order: 1,
-      max_order: 99,
-      tax_rate: 19,
-      deposit: 0,
-      storage_temp: '',
-      allergens: '',
-      ingredients: '',
-      nutrition_info: '',
-      origin: '',
-      brand: '',
-      featured: false,
-      in_stock: true,
-      visible: true
-    });
-    const [activeSection, setActiveSection] = useState('basic');
+    // Use parent state to prevent reset on re-render
+    const form = editItem || productForm;
+    const setForm = (newForm) => {
+      if (editItem) {
+        setEditItem(newForm);
+      } else {
+        setProductForm(typeof newForm === 'function' ? newForm(productForm) : newForm);
+      }
+    };
+    const activeSection = productSection;
+    const setActiveSection = setProductSection;
+
+    // Auto-fill from Open Food Facts
+    const autoFillProduct = async () => {
+      if (!form.name || form.name.length < 3) {
+        alert('Bitte gib zuerst einen Produktnamen ein (min. 3 Zeichen)');
+        return;
+      }
+      
+      setAutoFillLoading(true);
+      try {
+        // Search Open Food Facts by product name
+        const searchRes = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(form.name)}&search_simple=1&action=process&json=1&page_size=5`);
+        const searchData = await searchRes.json();
+        
+        if (searchData.products && searchData.products.length > 0) {
+          // Find best match (first result or one with most data)
+          const product = searchData.products[0];
+          
+          // Update form with found data (but NOT the image!)
+          setForm({
+            ...form,
+            description: product.generic_name_de || product.generic_name || product.product_name_de || form.description || '',
+            brand: product.brands || form.brand || '',
+            ean: product.code || form.ean || '',
+            weight: product.quantity ? product.quantity.replace(/[^0-9]/g, '') : form.weight || '',
+            weight_unit: product.quantity?.includes('ml') ? 'ml' : (product.quantity?.includes('l') ? 'l' : 'g'),
+            ingredients: product.ingredients_text_de || product.ingredients_text || form.ingredients || '',
+            allergens: product.allergens_tags ? product.allergens_tags.map(a => a.replace('en:', '')).join(', ') : form.allergens || '',
+            nutrition_info: product.nutriments ? `Energie: ${product.nutriments['energy-kcal_100g'] || '?'} kcal, Fett: ${product.nutriments.fat_100g || '?'}g, Kohlenhydrate: ${product.nutriments.carbohydrates_100g || '?'}g, Zucker: ${product.nutriments.sugars_100g || '?'}g, Eiweiß: ${product.nutriments.proteins_100g || '?'}g, Salz: ${product.nutriments.salt_100g || '?'}g` : form.nutrition_info || '',
+            origin: product.origins || product.countries_tags?.[0]?.replace('en:', '') || form.origin || '',
+            // Don't override image - user wants to add their own
+          });
+          
+          alert('✅ Produktdaten gefunden und eingefügt! Bitte prüfen und ggf. anpassen.');
+        } else {
+          alert('❌ Kein Produkt gefunden. Versuche einen anderen Namen oder fülle manuell aus.');
+        }
+      } catch (err) {
+        console.error('Auto-fill error:', err);
+        alert('❌ Fehler beim Abrufen der Produktdaten. Bitte manuell ausfüllen.');
+      } finally {
+        setAutoFillLoading(false);
+      }
+    };
 
     const sections = [
       { id: 'basic', label: 'Basis', icon: Info },
@@ -509,10 +598,26 @@ export default function Admin() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Produktname *</label>
-                    <input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required
-                      className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      placeholder="z.B. Bio Vollmilch 3,5%"
-                    />
+                    <div className="flex gap-2">
+                      <input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required
+                        className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        placeholder="z.B. HARIBO Goldbären 175g"
+                      />
+                      <button
+                        type="button"
+                        onClick={autoFillProduct}
+                        disabled={autoFillLoading || !form.name || form.name.length < 3}
+                        className="px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium hover:from-violet-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                        title="Produktdaten automatisch aus Open Food Facts laden"
+                      >
+                        {autoFillLoading ? (
+                          <><Loader2 size={18} className="animate-spin" /> Suche...</>
+                        ) : (
+                          <><Sparkles size={18} /> Auto-Fill</>
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">💡 Tipp: Gib den vollen Produktnamen ein und klicke "Auto-Fill" für automatische Daten</p>
                   </div>
                   <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Beschreibung</label>
@@ -887,6 +992,10 @@ export default function Admin() {
 
   // ============ SETTINGS ============
   const SettingsTab = () => {
+    const [shopOpen, setShopOpen] = useState(null);
+    const [shopLoading, setShopLoading] = useState(false);
+    const [shopHours, setShopHours] = useState({ openingTime: '08:00', closingTime: '22:00' });
+    
     const [settings, setSettings] = useState({
       // Shop
       shopName: 'Speeti',
@@ -923,7 +1032,34 @@ export default function Admin() {
       api.get('/admin/settings').then(({ data }) => {
         if (data) setSettings(s => ({ ...s, ...data }));
       }).catch(() => {});
+      
+      // Load shop status
+      api.get('/shop/status').then(({ data }) => {
+        setShopOpen(data.open);
+        setShopHours({ openingTime: data.openingTime, closingTime: data.closingTime });
+      }).catch(() => {});
     }, []);
+    
+    const toggleShopStatus = async (action) => {
+      setShopLoading(true);
+      try {
+        const { data } = await api.post('/admin/shop/toggle', { action });
+        setShopOpen(data.open);
+      } catch (e) {
+        alert('Fehler beim Ändern des Shop-Status');
+      } finally {
+        setShopLoading(false);
+      }
+    };
+    
+    const updateShopHours = async () => {
+      try {
+        await api.put('/admin/shop/hours', shopHours);
+        alert('Öffnungszeiten gespeichert!');
+      } catch (e) {
+        alert('Fehler beim Speichern');
+      }
+    };
 
     const saveSettings = async () => {
       setSaving(true);
@@ -951,6 +1087,78 @@ export default function Admin() {
               <CheckCircle size={18} /> Gespeichert!
             </span>
           )}
+        </div>
+
+        {/* Shop Status Control - LIVE */}
+        <div className={`rounded-2xl p-6 shadow-sm space-y-4 ${shopOpen ? 'bg-green-50 border-2 border-green-200' : 'bg-amber-50 border-2 border-amber-200'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-4 h-4 rounded-full ${shopOpen ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
+              <div>
+                <h3 className="font-bold text-lg">{shopOpen ? '🟢 Shop ist GEÖFFNET' : '🟡 Shop ist GESCHLOSSEN'}</h3>
+                <p className="text-sm text-gray-600">
+                  Öffnungszeiten: {shopHours.openingTime} - {shopHours.closingTime} Uhr
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => toggleShopStatus('open')}
+                disabled={shopLoading || shopOpen === true}
+                className={`px-4 py-2 rounded-xl font-medium transition-colors ${
+                  shopOpen ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600'
+                }`}
+              >
+                Öffnen
+              </button>
+              <button
+                onClick={() => toggleShopStatus('close')}
+                disabled={shopLoading || shopOpen === false}
+                className={`px-4 py-2 rounded-xl font-medium transition-colors ${
+                  !shopOpen ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-amber-500 text-white hover:bg-amber-600'
+                }`}
+              >
+                Schließen
+              </button>
+              <button
+                onClick={() => toggleShopStatus('auto')}
+                disabled={shopLoading}
+                className="px-4 py-2 rounded-xl font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors"
+              >
+                Auto
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 pt-2 border-t border-gray-200">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">Öffnet:</label>
+              <input 
+                type="time" 
+                value={shopHours.openingTime} 
+                onChange={e => setShopHours(h => ({ ...h, openingTime: e.target.value }))}
+                className="px-3 py-1.5 border rounded-lg text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">Schließt:</label>
+              <input 
+                type="time" 
+                value={shopHours.closingTime}
+                onChange={e => setShopHours(h => ({ ...h, closingTime: e.target.value }))}
+                className="px-3 py-1.5 border rounded-lg text-sm"
+              />
+            </div>
+            <button
+              onClick={updateShopHours}
+              className="px-4 py-1.5 bg-rose-500 text-white rounded-lg text-sm font-medium hover:bg-rose-600"
+            >
+              Speichern
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            💡 <strong>Auto:</strong> Folgt den Öffnungszeiten automatisch · 
+            <strong>Öffnen/Schließen:</strong> Manuell überschreiben (z.B. für Feiertage oder längere Öffnung)
+          </p>
         </div>
 
         {/* Shop Settings */}
@@ -1270,6 +1478,154 @@ export default function Admin() {
     );
   };
 
+  
+  // ============ ORDER DETAIL MODAL ============
+  const OrderDetailModal = () => {
+    if (!selectedOrder) return null;
+    const status = orderStatuses[selectedOrder.status] || orderStatuses.pending;
+    
+    const handlePrint = () => {
+      const printContent = `
+        <html>
+        <head>
+          <title>Bestellung #${selectedOrder.id}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; max-width: 400px; margin: 0 auto; }
+            h1 { font-size: 18px; border-bottom: 2px solid #000; padding-bottom: 10px; }
+            .info { margin: 10px 0; }
+            .items { margin: 20px 0; }
+            .item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #ccc; }
+            .total { font-weight: bold; font-size: 18px; margin-top: 15px; padding-top: 10px; border-top: 2px solid #000; }
+            .address { background: #f5f5f5; padding: 10px; margin: 10px 0; }
+          </style>
+        </head>
+        <body>
+          <h1>Speeti - Bestellung #${selectedOrder.id}</h1>
+          <div class="info">
+            <strong>Kunde:</strong> ${selectedOrder.customer_name}<br>
+            <strong>Tel:</strong> ${selectedOrder.customer_phone || '-'}<br>
+            <strong>Zeit:</strong> ${new Date(selectedOrder.created_at).toLocaleString('de-DE')}
+          </div>
+          <div class="address">
+            <strong>Lieferadresse:</strong><br>
+            ${selectedOrder.street} ${selectedOrder.house_number}<br>
+            ${selectedOrder.postal_code} ${selectedOrder.city}
+            ${selectedOrder.instructions ? '<br><em>Hinweis: ' + selectedOrder.instructions + '</em>' : ''}
+          </div>
+          <div class="items">
+            <strong>Artikel:</strong>
+            ${(selectedOrder.items || []).map(item => 
+              '<div class="item"><span>' + item.quantity + 'x ' + item.name + '</span><span>' + (item.price * item.quantity).toFixed(2) + ' EUR</span></div>'
+            ).join('')}
+          </div>
+          <div class="total">
+            Gesamt: ${selectedOrder.total?.toFixed(2)} EUR
+          </div>
+          <p style="margin-top:20px;font-size:12px;color:#666">Vielen Dank!</p>
+        </body>
+        </html>
+      `;
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(printContent);
+      printWindow.document.close();
+      printWindow.print();
+    };
+    
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <motion.div 
+          initial={{ scale: 0.95, opacity: 0 }} 
+          animate={{ scale: 1, opacity: 1 }} 
+          exit={{ scale: 0.95, opacity: 0 }}
+          className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col"
+        >
+          {/* Header */}
+          <div className={`p-4 flex items-center justify-between ${status.bg}`}>
+            <div>
+              <h2 className="text-lg font-bold">Bestellung #{selectedOrder.id}</h2>
+              <span className={`text-sm ${status.text}`}>{status.label}</span>
+            </div>
+            <button onClick={() => setSelectedOrder(null)} className="p-2 hover:bg-white/20 rounded-full">
+              <X size={20} />
+            </button>
+          </div>
+          
+          {/* Content */}
+          <div className="p-4 overflow-y-auto flex-1 space-y-4">
+            {/* Customer Info */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Kunde</h3>
+              <p className="font-medium">{selectedOrder.customer_name}</p>
+              {selectedOrder.customer_phone && (
+                <a href={`tel:${selectedOrder.customer_phone}`} className="text-primary-600 text-sm flex items-center gap-1 mt-1">
+                  <Phone size={14} /> {selectedOrder.customer_phone}
+                </a>
+              )}
+            </div>
+            
+            {/* Address */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Lieferadresse</h3>
+              <p className="font-medium">{selectedOrder.street} {selectedOrder.house_number}</p>
+              <p className="text-gray-600">{selectedOrder.postal_code} {selectedOrder.city}</p>
+              {selectedOrder.instructions && (
+                <p className="text-sm text-primary-600 mt-2 bg-primary-50 p-2 rounded-lg">{selectedOrder.instructions}</p>
+              )}
+            </div>
+            
+            {/* Items */}
+            <div className="bg-gray-50 rounded-xl p-3">
+              <h3 className="font-semibold text-sm text-gray-600 mb-2">Artikel ({selectedOrder.items?.length || 0})</h3>
+              <div className="space-y-2">
+                {(selectedOrder.items || []).map((item, i) => (
+                  <div key={i} className="flex items-center justify-between py-2 border-b border-gray-200 last:border-0">
+                    <div className="flex items-center gap-3">
+                      {item.image && <img src={item.image} alt="" className="w-10 h-10 object-cover rounded-lg" />}
+                      <div>
+                        <p className="font-medium text-sm">{item.name}</p>
+                        <p className="text-xs text-gray-500">{item.quantity}x {item.price?.toFixed(2)}€</p>
+                      </div>
+                    </div>
+                    <span className="font-semibold">{(item.price * item.quantity).toFixed(2)}€</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {/* Total */}
+            <div className="bg-primary-50 rounded-xl p-3 flex items-center justify-between">
+              <span className="font-semibold text-primary-800">Gesamtsumme</span>
+              <span className="text-xl font-bold text-primary-600">{selectedOrder.total?.toFixed(2)}€</span>
+            </div>
+            
+            {/* Notes */}
+            {selectedOrder.notes && (
+              <div className="bg-yellow-50 rounded-xl p-3">
+                <h3 className="font-semibold text-sm text-yellow-700 mb-1">Anmerkungen</h3>
+                <p className="text-sm text-yellow-800">{selectedOrder.notes}</p>
+              </div>
+            )}
+          </div>
+          
+          {/* Actions */}
+          <div className="p-4 border-t border-gray-100 flex gap-2">
+            <button onClick={handlePrint} className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-gray-200 rounded-xl hover:bg-gray-50">
+              <Printer size={18} /> Drucken
+            </button>
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedOrder.street + ' ' + selectedOrder.house_number + ', ' + selectedOrder.postal_code + ' ' + selectedOrder.city)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary-500 text-white rounded-xl hover:bg-primary-600"
+            >
+              <ExternalLink size={18} /> Maps
+            </a>
+          </div>
+        </motion.div>
+      </div>
+    );
+  };
+
   // ============ RENDER ============
   return (
     <div className="min-h-screen bg-gray-100 flex">
@@ -1298,6 +1654,16 @@ export default function Admin() {
             </button>
           ))}
         </nav>
+        {/* Logout Button */}
+        <div className="absolute bottom-0 left-0 right-0 p-2 border-t border-gray-100 bg-white">
+          <button
+            onClick={() => { logout(); navigate('/login'); }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors text-red-600 hover:bg-red-50"
+          >
+            <LogOut size={20} />
+            {!sidebarCollapsed && <span className="font-medium text-sm">Abmelden</span>}
+          </button>
+        </div>
       </aside>
 
       {/* Mobile Header */}
@@ -1307,6 +1673,13 @@ export default function Admin() {
           <select value={activeTab} onChange={(e) => setActiveTab(e.target.value)} className="px-3 py-1.5 border rounded-lg text-sm">
             {tabs.map(tab => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
           </select>
+          <button
+            onClick={() => { logout(); navigate('/login'); }}
+            className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+            title="Abmelden"
+          >
+            <LogOut size={20} />
+          </button>
         </div>
       </header>
 
@@ -1315,7 +1688,7 @@ export default function Admin() {
         <div className="max-w-6xl mx-auto">
           {activeTab === 'dashboard' && <DashboardTab />}
           {activeTab === 'orders' && <OrdersTab />}
-          {activeTab === 'products' && <ProductsTab />}
+          {activeTab === 'products' && productsTab}
           {activeTab === 'categories' && <CategoriesTab />}
           {activeTab === 'drivers' && <DriversTab />}
           {activeTab === 'customers' && <CustomersTab />}
@@ -1330,6 +1703,7 @@ export default function Admin() {
         {showModal === 'product' && <ProductModal />}
         {showModal === 'category' && <CategoryModal />}
         {showModal === 'driver' && <DriverModal />}
+        {selectedOrder && <OrderDetailModal />}
       </AnimatePresence>
     </div>
   );

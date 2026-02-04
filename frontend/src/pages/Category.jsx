@@ -1,42 +1,73 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Filter } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { ArrowLeft, SlidersHorizontal } from 'lucide-react';
 import { useStore, api } from '../store';
 import ProductCard from '../components/ProductCard';
 
 export default function Category() {
   const { slug } = useParams();
-  const { categories } = useStore();
+  const { categories, fetchCategories } = useStore();
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sortBy, setSortBy] = useState('name');
+  const [sortBy, setSortBy] = useState('newest');
 
-  const category = categories.find(c => c.slug === slug);
-
+  // Fetch categories if not loaded
   useEffect(() => {
-    if (category) {
-      setLoading(true);
-      api.get(`/products?category=${category.id}`)
-        .then(res => {
-          let sorted = res.data;
-          if (sortBy === 'price-low') {
-            sorted = [...sorted].sort((a, b) => a.price - b.price);
-          } else if (sortBy === 'price-high') {
-            sorted = [...sorted].sort((a, b) => b.price - a.price);
-          }
-          setProducts(sorted);
-        })
-        .finally(() => setLoading(false));
+    if (categories.length === 0) {
+      fetchCategories();
     }
-  }, [category, sortBy]);
+  }, [categories.length, fetchCategories]);
+
+  // Find category by slug - memoized to prevent unnecessary rerenders
+  const category = useMemo(() => {
+    return categories.find(c => c.slug === slug);
+  }, [categories, slug]);
+
+  // Fetch products when slug or sortBy changes
+  useEffect(() => {
+    // Wait for categories to be loaded
+    if (categories.length === 0) return;
+    
+    // Find category fresh from the current categories
+    const cat = categories.find(c => c.slug === slug);
+    if (!cat) {
+      setLoading(false);
+      setProducts([]);
+      return;
+    }
+
+    setLoading(true);
+    api.get(`/products?category=${cat.id}`)
+      .then(res => {
+        let sorted = res.data;
+        if (sortBy === 'name') {
+          sorted = [...sorted].sort((a, b) => a.name.localeCompare(b.name));
+        } else if (sortBy === 'price-low') {
+          sorted = [...sorted].sort((a, b) => a.price - b.price);
+        } else if (sortBy === 'price-high') {
+          sorted = [...sorted].sort((a, b) => b.price - a.price);
+        }
+        setProducts(sorted);
+      })
+      .catch(() => setProducts([]))
+      .finally(() => setLoading(false));
+  }, [slug, sortBy, categories.length]);
+
+  // Loading state while fetching categories
+  if (categories.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
 
   if (!category) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-bold text-gray-900 mb-4">Kategorie nicht gefunden</h1>
-          <Link to="/" className="text-primary-600 hover:underline">Zurück zur Startseite</Link>
+          <Link to="/" className="text-rose-500 hover:underline">Zurück zur Startseite</Link>
         </div>
       </div>
     );
@@ -44,31 +75,32 @@ export default function Category() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
+      {/* Header - Improved mobile layout */}
       <header className="bg-white border-b border-gray-100 sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Link to="/" className="lg:hidden p-2 hover:bg-gray-100 rounded-xl">
-                <ArrowLeft size={24} />
-              </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">{category.icon}</span>
-                <div>
-                  <h1 className="text-xl lg:text-2xl font-bold text-gray-900">{category.name}</h1>
-                  <p className="text-sm text-gray-500">{products.length} Produkte</p>
-                </div>
-              </div>
+        <div className="max-w-6xl mx-auto px-4 lg:px-8 py-3">
+          {/* Top row: Back + Category name + Icon */}
+          <div className="flex items-center gap-3 mb-2">
+            <Link to="/" className="p-2 -ml-2 hover:bg-gray-100 rounded-xl flex-shrink-0">
+              <ArrowLeft size={22} />
+            </Link>
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="text-2xl flex-shrink-0">{category.icon || '📦'}</span>
+              <h1 className="text-lg font-bold text-gray-900 truncate">{category.name}</h1>
             </div>
-
+          </div>
+          
+          {/* Bottom row: Product count + Sort */}
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-gray-500">{products.length} Produkte</p>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="px-4 py-2 bg-gray-100 rounded-xl text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="px-3 py-1.5 bg-gray-100 rounded-lg text-xs font-medium text-gray-600 focus:outline-none focus:ring-2 focus:ring-rose-500"
             >
+              <option value="newest">Neueste</option>
               <option value="name">Name A-Z</option>
-              <option value="price-low">Preis: Niedrig → Hoch</option>
-              <option value="price-high">Preis: Hoch → Niedrig</option>
+              <option value="price-low">Preis ↑</option>
+              <option value="price-high">Preis ↓</option>
             </select>
           </div>
         </div>
@@ -82,14 +114,14 @@ export default function Category() {
               <Link
                 key={cat.id}
                 to={`/category/${cat.slug}`}
-                className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                className={`flex-shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
                   cat.slug === slug
-                    ? 'bg-primary-500 text-white shadow-md shadow-primary-500/30'
+                    ? 'bg-rose-500 text-white shadow-md shadow-rose-500/30'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
-                <span className="text-lg">{cat.icon}</span>
-                <span className="whitespace-nowrap">{cat.name}</span>
+                <span className="text-base">{cat.icon || '📦'}</span>
+                <span className="whitespace-nowrap text-xs">{cat.name}</span>
               </Link>
             ))}
           </div>
@@ -97,34 +129,29 @@ export default function Category() {
       </div>
 
       {/* Products */}
-      <div className="max-w-6xl mx-auto px-4 lg:px-8 py-6">
+      <div className="max-w-6xl mx-auto px-4 lg:px-8 py-4">
         {loading ? (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[...Array(8)].map((_, i) => (
               <div key={i} className="bg-white rounded-2xl overflow-hidden animate-pulse">
                 <div className="aspect-square bg-gray-200" />
-                <div className="p-4 space-y-2">
-                  <div className="h-4 bg-gray-200 rounded w-3/4" />
-                  <div className="h-4 bg-gray-200 rounded w-1/2" />
+                <div className="p-3 space-y-2">
+                  <div className="h-3 bg-gray-200 rounded w-3/4" />
+                  <div className="h-3 bg-gray-200 rounded w-1/2" />
                 </div>
               </div>
             ))}
           </div>
         ) : products.length === 0 ? (
           <div className="text-center py-16">
-            <p className="text-gray-500">Keine Produkte in dieser Kategorie.</p>
+            <span className="text-5xl mb-4 block">{category.icon || '📦'}</span>
+            <p className="text-gray-500 font-medium">Noch keine Produkte</p>
+            <p className="text-gray-400 text-sm mt-1">Produkte werden bald hinzugefügt</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {products.map((product, i) => (
-              <motion.div
-                key={product.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.03 }}
-              >
-                <ProductCard product={product} compact={window.innerWidth < 1024} />
-              </motion.div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {products.map((product) => (
+              <ProductCard key={product.id} product={product} compact />
             ))}
           </div>
         )}

@@ -1,0 +1,24 @@
+# Speeti - Lebensmittel Lieferservice Münster
+# https://speeti.de
+
+User-agent: *
+Allow: /
+
+# Sitemaps
+Sitemap: https://speeti.de/sitemap.xml
+
+# Crawl-delay for respectful crawling
+Crawl-delay: 1
+
+# Block admin and API routes
+Disallow: /admin
+Disallow: /api/
+Disallow: /driver
+Disallow: /warehouse
+
+# Allow important pages
+Allow: /
+Allow: /category/
+Allow: /search
+Allow: /login
+Allow: /support

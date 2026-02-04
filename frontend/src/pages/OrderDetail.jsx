@@ -336,7 +336,7 @@ export default function OrderDetail() {
 
       {/* Chat Modal */}
       {showChat && hasDriver && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-end lg:items-center lg:justify-center">
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-end lg:items-center lg:justify-center pb-20 lg:pb-0">
           <div className="bg-white w-full max-w-lg rounded-t-2xl lg:rounded-2xl max-h-[80vh] flex flex-col">
             {/* Chat Header */}
             <div className="flex items-center justify-between p-4 border-b border-gray-100">
@@ -396,7 +396,7 @@ export default function OrderDetail() {
             </div>
 
             {/* Input */}
-            <div className="p-4 border-t border-gray-100">
+            <div className="p-4 border-t border-gray-100 safe-bottom">
               <div className="flex gap-2">
                 <input
                   type="text"

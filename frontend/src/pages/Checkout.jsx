@@ -8,41 +8,59 @@ import { useStore, api } from '../store';
 const AddressMap = lazy(() => import('../components/AddressMap'));
 import AddressAutocomplete from '../components/AddressAutocomplete';
 
-// Generate time slots
-const generateTimeSlots = () => {
+// Generate time slots based on shop hours
+const generateTimeSlots = (openingTime = '08:00', closingTime = '22:00') => {
   const slots = [];
   const now = new Date();
   const currentHour = now.getHours();
   const currentMin = now.getMinutes();
   
-  let startHour = currentHour;
-  let startMin = currentMin < 30 ? 30 : 0;
-  if (currentMin >= 30) startHour++;
+  const [openH] = openingTime.split(':').map(Number);
+  const [closeH] = closingTime.split(':').map(Number);
   
-  if (startHour < 22) {
-    for (let h = startHour; h < 22; h++) {
-      for (let m = (h === startHour ? startMin : 0); m < 60; m += 30) {
+  // Today's slots (only if before closing time)
+  let startHour = Math.max(currentHour + 1, openH);
+  if (currentMin >= 30) startHour = currentHour + 1;
+  
+  if (startHour < closeH) {
+    for (let h = startHour; h < closeH; h++) {
+      for (let m = 0; m < 60; m += 30) {
+        // Skip times that have passed
+        if (h === currentHour && m <= currentMin) continue;
+        
         const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-        const endTime = m === 30 ? `${h + 1}:00` : `${h}:30`;
+        const endH = m === 30 ? h + 1 : h;
+        const endM = m === 30 ? '00' : '30';
+        const endTime = `${endH.toString().padStart(2, '0')}:${endM}`;
+        
         slots.push({
           id: `today-${time}`,
-          label: `Heute ${time} - ${endTime.padStart(5, '0')}`,
+          label: `Heute ${time} - ${endTime}`,
           date: 'today',
-          time
+          time,
+          datetime: new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m).toISOString()
         });
       }
     }
   }
   
-  for (let h = 8; h < 22; h++) {
+  // Tomorrow's slots
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  
+  for (let h = openH; h < closeH; h++) {
     for (let m = 0; m < 60; m += 30) {
       const time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-      const endTime = m === 30 ? `${h + 1}:00` : `${h}:30`;
+      const endH = m === 30 ? h + 1 : h;
+      const endM = m === 30 ? '00' : '30';
+      const endTime = `${endH.toString().padStart(2, '0')}:${endM}`;
+      
       slots.push({
         id: `tomorrow-${time}`,
-        label: `Morgen ${time} - ${endTime.padStart(5, '0')}`,
+        label: `Morgen ${time} - ${endTime}`,
         date: 'tomorrow',
-        time
+        time,
+        datetime: new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), h, m).toISOString()
       });
     }
   }
@@ -51,7 +69,6 @@ const generateTimeSlots = () => {
 };
 
 // Münster PLZ ranges (48xxx)
-const MUENSTER_PLZ = ['48143', '48145', '48147', '48149', '48151', '48153', '48155', '48157', '48159', '48161', '48163', '48165', '48167'];
 const isValidMuensterPLZ = (plz) => {
   const cleaned = plz.replace(/\s/g, '');
   return cleaned.length === 5 && cleaned.startsWith('48');
@@ -62,11 +79,7 @@ const PaymentIcon = ({ method }) => {
   switch (method) {
     case 'cash': return <Banknote size={24} />;
     case 'card': return <CreditCard size={24} />;
-    case 'paypal': return <span className="text-xl font-bold text-blue-600">P</span>;
-    case 'klarna': return <span className="text-lg font-bold text-pink-500">K</span>;
-    case 'sofort': return <span className="text-lg font-bold text-orange-500">S</span>;
-    case 'googlepay': return <Smartphone size={24} />;
-    case 'applepay': return <Smartphone size={24} />;
+    case 'stripe': return <CreditCard size={24} />;
     default: return <Wallet size={24} />;
   }
 };
@@ -80,7 +93,7 @@ const paymentMethods = [
 export default function Checkout() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { cart, getCartTotal, addresses, selectedAddress, fetchAddresses, selectAddress, addAddress, createOrder, clearCart } = useStore();
+  const { cart, getCartTotal, addresses, selectedAddress, fetchAddresses, selectAddress, addAddress, createOrder, clearCart, shopStatus, fetchShopStatus } = useStore();
   
   const [paymentMethod, setPaymentMethod] = useState('stripe');
   const [notes, setNotes] = useState('');
@@ -95,7 +108,16 @@ export default function Checkout() {
   const [promoLoading, setPromoLoading] = useState(false);
   const [appliedPromo, setAppliedPromo] = useState(null);
   const [showMapPicker, setShowMapPicker] = useState(false);
-  const timeSlots = generateTimeSlots();
+  
+  const timeSlots = generateTimeSlots(shopStatus?.openingTime, shopStatus?.closingTime);
+  const isShopOpen = shopStatus?.open ?? true;
+
+  // If shop is closed, default to scheduled delivery
+  useEffect(() => {
+    if (!isShopOpen && deliveryType === 'asap' && shopStatus?.open !== undefined) {
+      setDeliveryType('scheduled');
+    }
+  }, [isShopOpen]);
 
   const subtotal = getCartTotal();
   const baseDeliveryFee = subtotal >= 20 ? 0 : 2.99;
@@ -117,6 +139,7 @@ export default function Checkout() {
 
   useEffect(() => {
     fetchAddresses();
+    fetchShopStatus();
     
     // Check for cancelled payment
     if (searchParams.get('cancelled') === 'true') {
@@ -172,7 +195,6 @@ export default function Checkout() {
   const handleMapAddressSelect = async (mapAddress) => {
     setShowMapPicker(false);
     
-    // Pre-fill the address form with map selection
     setNewAddress({
       street: mapAddress.street || '',
       house_number: mapAddress.house_number || '',
@@ -180,7 +202,6 @@ export default function Checkout() {
       instructions: ''
     });
     
-    // If we have complete address, save it directly
     if (mapAddress.street && mapAddress.house_number && mapAddress.postal_code) {
       await addAddress({
         ...mapAddress,
@@ -189,7 +210,6 @@ export default function Checkout() {
         label: `${mapAddress.street} ${mapAddress.house_number}`
       });
     } else {
-      // Show form for user to complete
       setShowAddressForm(true);
     }
   };
@@ -200,21 +220,36 @@ export default function Checkout() {
       return;
     }
     
+    // Check if scheduled delivery is selected but no slot chosen
+    if (deliveryType === 'scheduled' && !selectedSlot) {
+      setError('Bitte wähle eine Lieferzeit aus');
+      return;
+    }
+    
+    // If shop is closed and ASAP is selected, show error
+    if (!isShopOpen && deliveryType === 'asap' && shopStatus?.open !== undefined) {
+      setError('Der Shop ist geschlossen. Bitte wähle eine Vorbestellzeit.');
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
     try {
       const items = cart.map(item => ({ product_id: item.id, quantity: item.quantity }));
       
+      // Calculate scheduled time for the order
+      const scheduledTime = deliveryType === 'scheduled' && selectedSlot ? selectedSlot.datetime : null;
+      
       if (paymentMethod === 'stripe') {
-        // Create Stripe checkout session
+        // Create Stripe checkout session with scheduled time
         const { data } = await api.post('/checkout/create-session', {
           address_id: selectedAddress.id,
           items,
-          notes
+          notes,
+          scheduled_time: scheduledTime
         });
         
-        // Redirect to Stripe
         if (data.url) {
           window.location.href = data.url;
         } else {
@@ -222,7 +257,7 @@ export default function Checkout() {
         }
       } else {
         // Cash/Card at delivery - create order directly
-        const order = await createOrder(selectedAddress.id, paymentMethod, notes);
+        const order = await createOrder(selectedAddress.id, paymentMethod, notes, scheduledTime);
         navigate(`/orders/${order.id}`);
       }
     } catch (e) {
@@ -257,6 +292,23 @@ export default function Checkout() {
         </div>
       </header>
 
+      {/* Shop Closed Banner */}
+      {!isShopOpen && (
+        <div className="bg-amber-50 border-b border-amber-100 px-4 py-3">
+          <div className="max-w-lg mx-auto flex items-center gap-3">
+            <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <Clock size={20} className="text-amber-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-amber-800">Shop aktuell geschlossen</p>
+              <p className="text-sm text-amber-700">
+                Öffnet um {shopStatus?.openingTime || '08:00'} Uhr. Du kannst jetzt vorbestellen!
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Error Banner */}
       {error && (
         <div className="bg-red-50 border-b border-red-100 px-4 py-3">
@@ -276,19 +328,38 @@ export default function Checkout() {
           </h2>
           
           <div className="grid grid-cols-2 gap-3 mb-4">
+            {/* ASAP Option - Disabled when shop closed */}
             <button
-              onClick={() => { setDeliveryType('asap'); setSelectedSlot(null); }}
-              className={`p-4 rounded-xl border-2 transition-all ${
-                deliveryType === 'asap' 
-                  ? 'border-rose-500 bg-rose-50' 
-                  : 'border-gray-200 hover:border-gray-300'
+              onClick={() => { 
+                if (isShopOpen) {
+                  setDeliveryType('asap'); 
+                  setSelectedSlot(null); 
+                }
+              }}
+              disabled={!isShopOpen}
+              className={`p-4 rounded-xl border-2 transition-all relative ${
+                !isShopOpen 
+                  ? 'border-gray-200 bg-gray-50 cursor-not-allowed opacity-60'
+                  : deliveryType === 'asap' 
+                    ? 'border-rose-500 bg-rose-50' 
+                    : 'border-gray-200 hover:border-gray-300'
               }`}
             >
-              <Zap className={`mx-auto mb-2 ${deliveryType === 'asap' ? 'text-rose-500' : 'text-gray-400'}`} size={24} />
-              <p className="font-semibold text-sm">Schnellstmöglich</p>
-              <p className="text-xs text-gray-500">15-20 Minuten</p>
+              {!isShopOpen && (
+                <div className="absolute -top-2 -right-2 bg-amber-500 text-white text-[10px] px-2 py-0.5 rounded-full font-medium">
+                  Geschlossen
+                </div>
+              )}
+              <Zap className={`mx-auto mb-2 ${
+                !isShopOpen ? 'text-gray-300' : deliveryType === 'asap' ? 'text-rose-500' : 'text-gray-400'
+              }`} size={24} />
+              <p className={`font-semibold text-sm ${!isShopOpen ? 'text-gray-400' : ''}`}>Schnellstmöglich</p>
+              <p className={`text-xs ${!isShopOpen ? 'text-gray-400' : 'text-gray-500'}`}>
+                {isShopOpen ? '15-20 Minuten' : 'Nicht verfügbar'}
+              </p>
             </button>
             
+            {/* Pre-order Option */}
             <button
               onClick={() => setShowTimeSlots(true)}
               className={`p-4 rounded-xl border-2 transition-all ${
@@ -305,17 +376,38 @@ export default function Checkout() {
             </button>
           </div>
 
-          {deliveryType === 'asap' && (
-            <div className="flex items-center gap-3 p-3 bg-rose-50 rounded-xl">
-              <Zap className="text-rose-500" size={20} />
-              <p className="text-sm text-rose-700">Lieferung in <strong>15-20 Minuten</strong></p>
+          {/* Info box */}
+          {deliveryType === 'asap' && isShopOpen ? (
+            <div className="flex items-center gap-3 p-3 bg-green-50 rounded-xl">
+              <Zap className="text-green-600" size={20} />
+              <p className="text-sm text-green-700">Lieferung in <strong>15-20 Minuten</strong></p>
             </div>
-          )}
+          ) : deliveryType === 'scheduled' && selectedSlot ? (
+            <div className="flex items-center gap-3 p-3 bg-rose-50 rounded-xl">
+              <Calendar className="text-rose-500" size={20} />
+              <div className="flex-1">
+                <p className="text-sm text-rose-700">
+                  Lieferung: <strong>{selectedSlot.label}</strong>
+                </p>
+              </div>
+              <button 
+                onClick={() => setShowTimeSlots(true)}
+                className="text-rose-600 text-sm font-medium hover:underline"
+              >
+                Ändern
+              </button>
+            </div>
+          ) : deliveryType === 'scheduled' && !selectedSlot ? (
+            <div className="flex items-center gap-3 p-3 bg-amber-50 rounded-xl">
+              <AlertCircle className="text-amber-500" size={20} />
+              <p className="text-sm text-amber-700">Bitte wähle eine Lieferzeit aus</p>
+            </div>
+          ) : null}
         </section>
 
         {/* Time Slot Modal */}
         {showTimeSlots && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-end">
+          <div className="fixed inset-0 bg-black/50 z-[60] flex items-end">
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
@@ -327,29 +419,37 @@ export default function Checkout() {
                   onClick={() => setShowTimeSlots(false)}
                   className="p-2 hover:bg-gray-100 rounded-full"
                 >
-                  ✕
+                  <X size={20} />
                 </button>
               </div>
-              <div className="p-4 overflow-y-auto max-h-[50vh]">
-                <div className="space-y-2">
-                  {timeSlots.slice(0, 20).map(slot => (
-                    <button
-                      key={slot.id}
-                      onClick={() => {
-                        setSelectedSlot(slot);
-                        setDeliveryType('scheduled');
-                        setShowTimeSlots(false);
-                      }}
-                      className={`w-full p-4 rounded-xl border-2 text-left transition-colors ${
-                        selectedSlot?.id === slot.id 
-                          ? 'border-rose-500 bg-rose-50' 
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      <p className="font-medium">{slot.label}</p>
-                    </button>
-                  ))}
-                </div>
+              <div className="p-4 overflow-y-auto max-h-[50vh] pb-20">
+                {timeSlots.length === 0 ? (
+                  <div className="text-center py-8">
+                    <AlertCircle className="mx-auto text-gray-400 mb-3" size={40} />
+                    <p className="text-gray-600">Keine Zeitfenster verfügbar</p>
+                    <p className="text-sm text-gray-400">Bitte versuche es morgen erneut</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {timeSlots.map(slot => (
+                      <button
+                        key={slot.id}
+                        onClick={() => {
+                          setSelectedSlot(slot);
+                          setDeliveryType('scheduled');
+                          setShowTimeSlots(false);
+                        }}
+                        className={`w-full p-4 rounded-xl border-2 text-left transition-colors ${
+                          selectedSlot?.id === slot.id 
+                            ? 'border-rose-500 bg-rose-50' 
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <p className="font-medium">{slot.label}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
@@ -553,8 +653,7 @@ export default function Checkout() {
           {paymentMethod === 'stripe' && (
             <div className="mt-4 p-3 bg-blue-50 rounded-xl">
               <p className="text-sm text-blue-700">
-                💳 Du wirst zu unserem sicheren Zahlungsanbieter weitergeleitet. 
-                Unterstützte Zahlungsarten: Kreditkarte, PayPal, Klarna, Sofortüberweisung.
+                💳 Du wirst zu unserem sicheren Zahlungsanbieter weitergeleitet.
               </p>
             </div>
           )}
@@ -700,7 +799,7 @@ export default function Checkout() {
           </div>
           <button
             onClick={handleOrder}
-            disabled={!selectedAddress || loading}
+            disabled={!selectedAddress || loading || (deliveryType === 'scheduled' && !selectedSlot)}
             className="w-full bg-rose-500 hover:bg-rose-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-2xl transition-colors shadow-lg shadow-rose-500/30 flex items-center justify-center gap-2"
           >
             {loading ? (

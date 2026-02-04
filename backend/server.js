@@ -1,3 +1,5 @@
+require('dotenv').config({ path: __dirname + '/.env' });
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -7,6 +9,49 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { generateInvoice, generateInvoiceNumber } = require('./invoice-generator');
+const emailService = require('./email-service');
+// Helper function to send order emails
+async function sendOrderEmails(orderId, status) {
+  try {
+    const order = db.prepare(`
+      SELECT o.*, u.email, u.name as customer_name, 
+             a.street, a.house_number, a.postal_code, a.city
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      LEFT JOIN addresses a ON o.address_id = a.id
+      WHERE o.id = ?
+    `).get(orderId);
+    
+    if (!order || !order.email) return;
+    
+    const items = db.prepare(`
+      SELECT oi.*, p.name, p.image FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = ?
+    `).all(orderId);
+    
+    let subject, html;
+    if (status === 'confirmed') {
+      subject = `Bestellung #${orderId} bestätigt! 🎉`;
+      html = emailService.orderConfirmationEmail(order, items);
+    } else if (['preparing', 'picking', 'delivering', 'delivered'].includes(status)) {
+      const titles = {
+        preparing: 'Wird vorbereitet 👨‍🍳',
+        picking: 'Wird gepackt 📦',
+        delivering: 'Unterwegs zu dir! 🛵',
+        delivered: 'Geliefert! 🎉'
+      };
+      subject = `Bestellung #${orderId}: ${titles[status]}`;
+      html = emailService.deliveryStatusEmail(order, status);
+    }
+    
+    if (subject && html) {
+      emailService.sendEmail(order.email, subject, html);
+    }
+  } catch (e) {
+    console.error('Email error:', e);
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -313,7 +358,17 @@ app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Serve frontend in production
-app.use(express.static(path.join(__dirname, '../frontend/dist')));
+// Static files with cache headers for SPA
+app.use(express.static(path.join(__dirname, '../frontend/dist'), {
+  maxAge: '1d',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    } else if (filePath.match(/\.(js|css)$/)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  }
+}));
 
 // Auth middleware
 const auth = (roles = []) => (req, res, next) => {
@@ -412,7 +467,7 @@ app.get('/api/products', (req, res) => {
     sql += ' AND p.featured = 1';
   }
   
-  sql += ' ORDER BY p.sort_order, p.name';
+  sql += ' ORDER BY p.created_at DESC, p.sort_order, p.id DESC';
   const products = db.prepare(sql).all(...params);
   res.json(products);
 });
@@ -551,7 +606,7 @@ app.get('/api/orders/:id', auth(), (req, res) => {
 });
 
 app.post('/api/orders', auth(), (req, res) => {
-  const { address_id, items, payment_method, notes } = req.body;
+  const { address_id, items, payment_method, notes, scheduled_time } = req.body;
   
   let subtotal = 0;
   const productIds = items.map(i => i.product_id);
@@ -564,10 +619,10 @@ app.post('/api/orders', auth(), (req, res) => {
   
   const delivery_fee = 2.99;
   const total = subtotal + delivery_fee;
-  const estimated = new Date(Date.now() + 20 * 60000).toISOString();
+  const estimated = scheduled_time ? scheduled_time : new Date(Date.now() + 20 * 60000).toISOString();
   
-  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?)`);
-  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated);
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, notes, estimated_delivery, scheduled_time) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)`);
+  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, delivery_fee, total, payment_method || 'cash', notes || null, estimated, scheduled_time || null);
   const orderId = orderResult.lastInsertRowid;
   
   const itemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
@@ -577,6 +632,7 @@ app.post('/api/orders', auth(), (req, res) => {
   });
   
   io.emit('new-order', { orderId });
+  sendOrderEmails(orderId, 'confirmed');
   
   res.json({ id: orderId, total, estimated_delivery: estimated });
 });
@@ -609,6 +665,7 @@ app.patch('/api/orders/:id/status', auth(['admin', 'driver']), (req, res) => {
   db.prepare(update).run(...params);
   
   io.emit('order-update', { orderId: parseInt(req.params.id), status });
+  sendOrderEmails(parseInt(req.params.id), status);
   
   // Auto-generate invoice when delivered
   if (status === 'delivered') {
@@ -659,30 +716,72 @@ app.get('/api/orders/:id/messages', auth(), (req, res) => {
 // ============ SUPPORT CHAT (AI + Escalation) ============
 
 // AI System prompt for customer support
-const SUPPORT_SYSTEM_PROMPT = `Du bist der freundliche KI-Kundenservice-Assistent von Speeti, einem Lieferdienst in Münster (ähnlich wie Flink/Gorillas).
+const SUPPORT_SYSTEM_PROMPT = `Du bist der freundliche KI-Kundenservice-Assistent von Speeti, einem blitzschnellen Lebensmittel-Lieferdienst in Münster (ähnlich wie Flink/Gorillas).
 
-DEINE AUFGABEN:
-- Beantworte Fragen zu Bestellungen, Lieferzeiten, Produkten
-- Hilf bei Problemen mit Bestellungen (verspätet, falsche Artikel, etc.)
-- Erkläre Rückerstattungen und Stornierungen
-- Sei freundlich, hilfsbereit und lösungsorientiert
+DEINE PERSÖNLICHKEIT:
+- Freundlich, hilfsbereit und lösungsorientiert
+- Benutze Emojis sparsam aber passend
+- Antworte prägnant (2-3 Sätze max)
+- Sei proaktiv und biete Lösungen an
 
-WICHTIGE INFOS:
-- Lieferzeit: ca. 15-20 Minuten
-- Liefergebühr: 2,99€
-- Liefergebiet: Münster und Umgebung
-- Öffnungszeiten: 8:00 - 23:00 Uhr
-- Mindestbestellwert: keiner
+UNSER SERVICE - DIESE INFOS KANNST DU IMMER GEBEN:
+📍 Liefergebiet: Ganz Münster (alle PLZ mit 48...)
+⏱️ Lieferzeit: Ca. 15-20 Minuten
+💰 Liefergebühr: 2,99€ (ab 20€ Bestellwert GRATIS!)
+🕐 Öffnungszeiten: Täglich 08:00 - 22:00 Uhr
+📦 Mindestbestellwert: Keiner!
+💳 Zahlungsmethoden: Kreditkarte, Barzahlung
+🏷️ Promo-Code für Neukunden: WELCOME10 (10% Rabatt)
 
-BEI FOLGENDEN SITUATIONEN ESKALIERE ZU EINEM MENSCHEN (antworte mit [ESKALATION]):
-- Kunde ist sehr verärgert/verwendet Schimpfwörter
-- Rückerstattung über 20€ gewünscht
-- Rechtliche Fragen oder Beschwerden
-- Technische Probleme die du nicht lösen kannst
-- Kunde fragt explizit nach einem Menschen
-- Sicherheitsfragen (Account gehackt, etc.)
+HÄUFIGE FRAGEN - BEANTWORTE DIESE IMMER:
 
-Antworte immer auf Deutsch. Sei prägnant aber hilfreich. Maximal 2-3 Sätze pro Antwort.`;
+1. Wo liefert ihr? / Liefert ihr nach...?
+   → Wir liefern in ganz Münster! Alle Postleitzahlen die mit 48 beginnen. Leider noch nicht außerhalb von Münster.
+
+2. Wie lange dauert die Lieferung?
+   → In der Regel 15-20 Minuten nach Bestellung!
+
+3. Wie kann ich bezahlen?
+   → Kreditkarte direkt in der App oder Barzahlung an der Tür. Alles easy!
+
+4. Kann ich stornieren?
+   → Ja, solange die Bestellung noch nicht unterwegs ist. Geh zu Meine Bestellungen und tippe auf Stornieren.
+
+5. Meine Bestellung ist falsch/beschädigt
+   → Das tut mir sehr leid! Mach bitte ein Foto und schick es mir. Wir erstatten oder liefern neu - kein Problem!
+
+6. Wie bekomme ich eine Rückerstattung?
+   → Bei Problemen mit der Bestellung einfach hier melden. Wir kümmern uns darum und erstatten innerhalb von 24h.
+
+7. Gibt es Rabatte?
+   → Neukunden bekommen 10% mit WELCOME10. Wir haben auch regelmäßig Angebote in der App!
+
+8. Wann habt ihr geöffnet?
+   → Täglich von 8:00 bis 22:00 Uhr. Außerhalb der Zeiten kannst du Vorbestellungen für den nächsten Tag machen!
+
+9. Kann ich Sonderwünsche angeben?
+   → Ja! Im Checkout gibt es ein Notizfeld. Z.B. Bitte klingeln oder Vor der Tür abstellen.
+
+10. Wie verfolge ich meine Bestellung?
+    → In der App unter Meine Bestellungen siehst du den Live-Status und wo dein Fahrer gerade ist!
+
+BESTELLUNGSPROBLEME:
+- Verspätung: Entschuldige dich, erkläre dass es manchmal länger dauern kann, biete Info zum Tracking an
+- Falscher Artikel: Entschuldige dich, bitte um Foto, biete Erstattung oder Nachlieferung an
+- Beschädigt: Entschuldige dich, bitte um Foto, erstattest sofort
+- Fahrer nicht erreichbar: Versuche den Fahrer über die App zu kontaktieren, sonst hilf mit Alternative
+
+ESKALIERE ZU EINEM MENSCHEN (antworte mit [ESKALATION]) NUR BEI:
+- Kunde verwendet wiederholt Schimpfwörter oder ist sehr aggressiv
+- Rückerstattung über 50€
+- Rechtliche Drohungen
+- Account-Sicherheitsprobleme
+- Kunde fragt EXPLIZIT nach einem Menschen/Mitarbeiter
+- Du weißt die Antwort wirklich nicht
+
+WICHTIG: Versuche IMMER erst selbst zu helfen bevor du eskalierst!
+Antworte IMMER auf Deutsch.
+`;
 
 // Get or create support ticket
 app.post('/api/support/ticket', auth(), async (req, res) => {
@@ -795,21 +894,68 @@ app.post('/api/support/message', auth(), async (req, res) => {
       aiResponse = 'Entschuldigung, ich habe gerade technische Schwierigkeiten. Bitte versuche es in ein paar Minuten erneut oder kontaktiere uns unter support@speeti.de';
     }
   } else {
-    // Fallback without OpenAI - basic keyword matching
+    // Fallback without OpenAI - comprehensive keyword matching
     const lowerMsg = message.toLowerCase();
-    if (lowerMsg.includes('mensch') || lowerMsg.includes('mitarbeiter') || lowerMsg.includes('support')) {
+    
+    // Escalation triggers
+    if (lowerMsg.includes('mensch') || lowerMsg.includes('mitarbeiter') || lowerMsg.includes('echter support')) {
       shouldEscalate = true;
-      aiResponse = 'Ich leite dich an einen Mitarbeiter weiter. Bitte warte einen Moment. 🙋‍♂️';
-    } else if (lowerMsg.includes('lieferzeit') || lowerMsg.includes('wie lange')) {
-      aiResponse = 'Die Lieferung dauert normalerweise 15-20 Minuten. Du kannst den Status deiner Bestellung jederzeit in der App verfolgen! 🚴';
-    } else if (lowerMsg.includes('stornieren') || lowerMsg.includes('abbrechen')) {
-      aiResponse = 'Um eine Bestellung zu stornieren, gehe zu "Meine Bestellungen" und tippe auf die Bestellung. Falls sie schon in Bearbeitung ist, kontaktiere bitte deinen Fahrer direkt.';
-    } else if (lowerMsg.includes('bezahlung') || lowerMsg.includes('zahlung')) {
-      aiResponse = 'Wir akzeptieren Barzahlung, Kreditkarte, PayPal, Google Pay, Apple Pay, Klarna und Sofortüberweisung! 💳';
-    } else {
-      aiResponse = 'Danke für deine Nachricht! Ich bin ein KI-Assistent und helfe dir gerne. Kannst du mir mehr Details geben, damit ich dir besser helfen kann?';
+      aiResponse = 'Ich leite dich an einen Mitarbeiter weiter. Bitte warte einen Moment. 🙋♂️';
+    }
+    // Lieferzeit
+    else if (lowerMsg.includes('lieferzeit') || lowerMsg.includes('wie lange') || lowerMsg.includes('wann kommt')) {
+      aiResponse = 'Die Lieferung dauert normalerweise 15-20 Minuten! 🚴 Du kannst den Live-Status in "Meine Bestellungen" verfolgen.';
+    }
+    // Stornierung
+    else if (lowerMsg.includes('stornieren') || lowerMsg.includes('abbrechen') || lowerMsg.includes('storno')) {
+      aiResponse = 'Kein Problem! Geh zu "Meine Bestellungen" und tippe auf Stornieren. Falls die Bestellung schon unterwegs ist, kontaktiere deinen Fahrer direkt über den Chat.';
+    }
+    // Bezahlung
+    else if (lowerMsg.includes('bezahl') || lowerMsg.includes('zahlung') || lowerMsg.includes('kreditkarte') || lowerMsg.includes('bar')) {
+      aiResponse = 'Du kannst mit Kreditkarte in der App oder bar an der Tür bezahlen! 💳 Beides kein Problem.';
+    }
+    // Liefergebiet
+    else if (lowerMsg.includes('liefert ihr') || lowerMsg.includes('liefergebiet') || lowerMsg.includes('wo liefert')) {
+      aiResponse = 'Wir liefern in ganz Münster! 📍 Alle Postleitzahlen die mit 48 beginnen. Außerhalb leider noch nicht.';
+    }
+    // Öffnungszeiten
+    else if (lowerMsg.includes('öffnungszeit') || lowerMsg.includes('geöffnet') || lowerMsg.includes('geschlossen') || lowerMsg.includes('wann auf')) {
+      aiResponse = 'Wir sind täglich von 08:00 bis 22:00 Uhr für dich da! 🕐 Außerhalb kannst du Vorbestellungen machen.';
+    }
+    // Rabatt/Promo
+    else if (lowerMsg.includes('rabatt') || lowerMsg.includes('promo') || lowerMsg.includes('gutschein') || lowerMsg.includes('code')) {
+      aiResponse = 'Als Neukunde bekommst du 10% Rabatt mit dem Code WELCOME10! 🎉 Weitere Angebote findest du in der App.';
+    }
+    // Liefergebühr
+    else if (lowerMsg.includes('liefergebühr') || lowerMsg.includes('versand') || lowerMsg.includes('kosten')) {
+      aiResponse = 'Die Liefergebühr beträgt 2,99€ - aber ab 20€ Bestellwert ist sie GRATIS! 🎁';
+    }
+    // Problem/Beschwerde
+    else if (lowerMsg.includes('problem') || lowerMsg.includes('beschwerde') || lowerMsg.includes('falsch') || lowerMsg.includes('fehlt')) {
+      aiResponse = 'Das tut mir leid! 😔 Beschreib mir bitte genau was passiert ist - bei Problemen mit deiner Bestellung finden wir eine Lösung!';
+    }
+    // Rückerstattung
+    else if (lowerMsg.includes('erstattung') || lowerMsg.includes('geld zurück') || lowerMsg.includes('refund')) {
+      aiResponse = 'Bei berechtigten Problemen erstatten wir natürlich! Beschreib mir was passiert ist und wir kümmern uns darum. 💪';
+    }
+    // Tracking
+    else if (lowerMsg.includes('track') || lowerMsg.includes('verfolg') || lowerMsg.includes('wo ist')) {
+      aiResponse = 'Du kannst deine Bestellung live verfolgen! Geh zu "Meine Bestellungen" - dort siehst du genau wo dein Fahrer ist. 📱';
+    }
+    // Danke
+    else if (lowerMsg.includes('danke') || lowerMsg.includes('super') || lowerMsg.includes('toll')) {
+      aiResponse = 'Gerne! 😊 Gibt es noch etwas womit ich dir helfen kann?';
+    }
+    // Hallo/Begrüßung
+    else if (lowerMsg.includes('hallo') || lowerMsg.includes('hi') || lowerMsg.includes('hey') || lowerMsg.includes('guten')) {
+      aiResponse = 'Hey! 👋 Schön dass du da bist. Wie kann ich dir helfen?';
+    }
+    // Default
+    else {
+      aiResponse = 'Ich bin Speeti\'s KI-Assistent! 🤖 Ich kann dir helfen mit: Bestellungen, Lieferzeiten, Bezahlung, Stornierung und mehr. Was möchtest du wissen?';
     }
   }
+
   
   // Save AI response
   db.prepare('INSERT INTO support_messages (ticket_id, sender_type, message) VALUES (?, ?, ?)')
@@ -881,7 +1027,7 @@ app.post('/api/checkout/create-session', auth(), async (req, res) => {
     return res.status(500).json({ error: 'Stripe nicht konfiguriert' });
   }
   
-  const { address_id, items, notes } = req.body;
+  const { address_id, items, notes, scheduled_time } = req.body;
   
   // Calculate totals
   let subtotal = 0;
@@ -919,10 +1065,10 @@ app.post('/api/checkout/create-session', auth(), async (req, res) => {
   
   const total = subtotal + 2.99;
   
-  // Create pending order
-  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, payment_status, notes, estimated_delivery) VALUES (?, ?, 'pending', ?, 2.99, ?, 'stripe', 'pending', ?, ?)`);
-  const estimated = new Date(Date.now() + 20 * 60000).toISOString();
-  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, total, notes || null, estimated);
+  // Create pending order with optional scheduled time
+  const estimated = scheduled_time ? scheduled_time : new Date(Date.now() + 20 * 60000).toISOString();
+  const orderStmt = db.prepare(`INSERT INTO orders (user_id, address_id, status, subtotal, delivery_fee, total, payment_method, payment_status, notes, estimated_delivery, scheduled_time) VALUES (?, ?, 'pending', ?, 2.99, ?, 'stripe', 'pending', ?, ?, ?)`);
+  const orderResult = orderStmt.run(req.user.id, address_id, subtotal, total, notes || null, estimated, scheduled_time || null);
   const orderId = orderResult.lastInsertRowid;
   
   // Insert items
@@ -989,6 +1135,7 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
         .run('confirmed', 'paid', orderId);
       
       io.emit('new-order', { orderId: parseInt(orderId) });
+  sendOrderEmails(orderId, 'confirmed');
     }
   }
   
@@ -1559,6 +1706,191 @@ async function sendPushNotification(userId, title, body, data = {}) {
   io.emit(`notification-${userId}`, { title, body, data });
 }
 
+// ============ AI BARCODE SCANNING ============
+
+// AI Vision barcode recognition using OpenAI GPT-4o
+app.post('/api/ai/scan-barcode', async (req, res) => {
+  const { image } = req.body;
+  
+  if (!image) {
+    return res.status(400).json({ error: 'Kein Bild übermittelt' });
+  }
+  
+  if (!OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY not configured');
+    return res.status(500).json({ error: 'OpenAI API nicht konfiguriert' });
+  }
+  
+  console.log('AI Barcode scan request received, image size:', Math.round(image.length / 1024), 'KB');
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a barcode reading expert. Your job is to find and read barcode numbers from product images. Look carefully at the image for any barcode - it could be on packaging, labels, cans, bottles, or boxes. Barcodes are vertical black and white lines with numbers printed below them.'
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Please find the barcode in this image and tell me the number. Look for:\n- EAN-13 (13 digits, common in Europe)\n- EAN-8 (8 digits)\n- UPC-A (12 digits, common in USA)\n- Any product barcode with vertical lines\n\nThe barcode might be on a can, bottle, box, or any product packaging. Look at the entire image carefully.\n\nRespond with ONLY the barcode number (digits only). If you cannot find or read any barcode, respond with exactly: NONE'
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: image,
+                  detail: 'high'
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 100,
+        temperature: 0
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error('OpenAI API error:', data.error);
+      return res.json({ barcode: null, error: data.error.message });
+    }
+    
+    const result = data.choices?.[0]?.message?.content?.trim();
+    console.log('AI barcode raw result:', result);
+    
+    // Check if result is exactly NONE
+    if (!result || result === 'NONE' || result.toLowerCase().includes('cannot') || result.toLowerCase().includes('unable')) {
+      console.log('AI could not find barcode');
+      return res.json({ barcode: null });
+    }
+    
+    // Extract digits from result (barcode should be 8-14 digits)
+    const digits = result.replace(/\D/g, '');
+    console.log('AI extracted digits:', digits);
+    
+    if (digits.length >= 8 && digits.length <= 14) {
+      console.log('✅ AI found valid barcode:', digits);
+      return res.json({ barcode: digits });
+    }
+    
+    // Try to find a barcode pattern in the response
+    const barcodeMatch = result.match(/\b\d{8,14}\b/);
+    if (barcodeMatch) {
+      console.log('✅ AI found barcode in text:', barcodeMatch[0]);
+      return res.json({ barcode: barcodeMatch[0] });
+    }
+    
+    console.log('No valid barcode found in AI response');
+    return res.json({ barcode: null });
+    
+  } catch (err) {
+    console.error('AI scan error:', err);
+    return res.status(500).json({ error: 'AI-Analyse fehlgeschlagen' });
+  }
+});
+
+// AI Product identification from image (when barcode lookup fails)
+app.post('/api/ai/identify-product', async (req, res) => {
+  const { image, barcode } = req.body;
+  
+  if (!image) {
+    return res.status(400).json({ error: 'Kein Bild übermittelt' });
+  }
+  
+  if (!OPENAI_API_KEY) {
+    return res.json({ product: null });
+  }
+  
+  console.log('AI product identification for barcode:', barcode);
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a product identification expert. Analyze product images and provide detailed product information in JSON format.'
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Identify this product from the image. The barcode is: ${barcode || 'unknown'}
+
+Please analyze the image and return a JSON object with these fields:
+{
+  "name": "Product name in German",
+  "brand": "Brand name",
+  "category": "One of: Getränke, Snacks, Süßigkeiten, Obst & Gemüse, Milchprodukte, Tiefkühl, Haushalt, Pflege, Tabak, Alkohol, Sonstiges",
+  "description": "Short description in German",
+  "quantity_info": "Size/weight if visible (e.g. 500ml, 250g, 20 Stück)",
+  "estimated_price": "Estimated price in EUR if you can guess, or null"
+}
+
+Return ONLY the JSON object, no other text.`
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: image,
+                  detail: 'high'
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.3
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error('OpenAI error:', data.error);
+      return res.json({ product: null });
+    }
+    
+    const result = data.choices?.[0]?.message?.content?.trim();
+    console.log('AI product identification result:', result);
+    
+    try {
+      // Parse JSON from response (handle markdown code blocks)
+      let jsonStr = result;
+      if (result.includes('```')) {
+        jsonStr = result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      }
+      const product = JSON.parse(jsonStr);
+      return res.json({ product, source: 'AI Vision' });
+    } catch (parseErr) {
+      console.error('Failed to parse AI response:', parseErr);
+      return res.json({ product: null });
+    }
+    
+  } catch (err) {
+    console.error('AI identify error:', err);
+    return res.json({ product: null });
+  }
+});
+
 // ============ INVENTORY / WAREHOUSE MANAGEMENT ============
 
 // Get all inventory items
@@ -1609,10 +1941,44 @@ app.post('/api/inventory/add', auth(['admin']), (req, res) => {
       }
     }
     
-    // Insert new item
+    // Map category name to category_id
+    const categoryMap = {
+      'Getränke': 4,
+      'Snacks': 5,
+      'Süßigkeiten': 6,
+      'Obst & Gemüse': 1,
+      'Milchprodukte': 2,
+      'Tiefkühl': 7,
+      'Haushalt': 9,
+      'Pflege': 10,
+      'Sonstiges': 8
+    };
+    
+    // First, create product in the shop (products table)
+    let productId = null;
+    const categoryId = categoryMap[category] || 8; // Default to Sonstiges (8)
+    
+    try {
+      const productResult = db.prepare(`
+        INSERT INTO products (category_id, name, description, price, image, unit, unit_amount, stock_count, in_stock)
+        VALUES (?, ?, ?, ?, ?, 'Stück', '1', ?, 1)
+      `).run(
+        categoryId,
+        brand ? `${brand} ${name}` : name,
+        brand ? `${name} von ${brand}` : name,
+        price || 0,
+        image || null,
+        quantity || 1
+      );
+      productId = productResult.lastInsertRowid;
+    } catch (prodErr) {
+      console.log('Product creation skipped (may already exist):', prodErr.message);
+    }
+    
+    // Insert into inventory
     const result = db.prepare(`
-      INSERT INTO inventory (barcode, name, brand, category, price, image, stock, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO inventory (barcode, name, brand, category, price, image, stock, source, product_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       barcode || null, 
       name, 
@@ -1621,7 +1987,8 @@ app.post('/api/inventory/add', auth(['admin']), (req, res) => {
       price || null,
       image || null,
       quantity || 1,
-      source || 'Manual'
+      source || 'Manual',
+      productId
     );
     
     // Log transaction
@@ -1630,7 +1997,11 @@ app.post('/api/inventory/add', auth(['admin']), (req, res) => {
       VALUES (?, ?, 'initial', ?)
     `).run(result.lastInsertRowid, quantity || 1, req.user.id);
     
-    res.json({ id: result.lastInsertRowid, created: true });
+    res.json({ 
+      id: result.lastInsertRowid, 
+      product_id: productId,
+      created: true 
+    });
   } catch (e) {
     console.error('Inventory add error:', e);
     res.status(500).json({ error: 'Fehler beim Hinzufügen' });
@@ -1811,7 +2182,155 @@ io.on('connection', (socket) => {
   });
 });
 
+// ============ WAITLIST FOR OTHER CITIES ============// Create waitlist tabledb.exec(`  CREATE TABLE IF NOT EXISTS waitlist (    id INTEGER PRIMARY KEY AUTOINCREMENT,    email TEXT NOT NULL,    city TEXT NOT NULL,    postal_code TEXT,    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,    notified INTEGER DEFAULT 0,    UNIQUE(email, city)  )`);// POST /api/waitlist - Join waitlist for a cityapp.post("/api/waitlist", (req, res) => {  const { email, city, postalCode } = req.body;    if (!email || !city) {    return res.status(400).json({ error: "Email und Stadt erforderlich" });  }    try {    db.prepare("INSERT OR IGNORE INTO waitlist (email, city, postal_code) VALUES (?, ?, ?)").run(email, city, postalCode || null);    console.log("📝 Waitlist signup:", email, "for", city);        // Send welcome email    emailService.sendEmail(email, "Du bist auf der Warteliste! 🚀", emailService.waitlistEmail(email, city));        res.json({ success: true, message: "Du wirst benachrichtigt sobald wir in deiner Stadt starten!" });  } catch (e) {    res.status(400).json({ error: "Bereits auf der Warteliste" });  }});// GET /api/admin/waitlist - Admin: See waitlistapp.get("/api/admin/waitlist", auth(["admin"]), (req, res) => {  const waitlist = db.prepare("SELECT * FROM waitlist ORDER BY created_at DESC").all();  res.json(waitlist);});
 // Catch-all for SPA
+// ============ SHOP STATUS & ÖFFNUNGSZEITEN ============
+
+// Shop status cache (in-memory for fast access)
+let shopStatus = {
+  manuallyOpen: null, // null = use schedule, true = force open, false = force closed
+  openingTime: '08:00',
+  closingTime: '22:00',
+  timezone: 'Europe/Berlin'
+};
+
+// Load shop status from settings on startup
+try {
+  const savedSettings = db.prepare("SELECT * FROM settings WHERE key IN ('shop_manually_open', 'opening_time', 'closing_time')").all();
+  savedSettings.forEach(s => {
+    if (s.key === 'shop_manually_open') shopStatus.manuallyOpen = s.value === 'true' ? true : s.value === 'false' ? false : null;
+    if (s.key === 'opening_time') shopStatus.openingTime = s.value;
+    if (s.key === 'closing_time') shopStatus.closingTime = s.value;
+  });
+} catch (e) {
+  console.log('Shop status defaults used');
+}
+
+// Helper: Check if shop is currently open
+function isShopOpen() {
+  // Manual override takes priority
+  if (shopStatus.manuallyOpen === true) return { open: true, reason: 'manual', message: 'Manuell geöffnet' };
+  if (shopStatus.manuallyOpen === false) return { open: false, reason: 'manual', message: 'Aktuell geschlossen' };
+  
+  // Check schedule
+  const now = new Date();
+  const berlinTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+  const currentHours = berlinTime.getHours();
+  const currentMinutes = berlinTime.getMinutes();
+  const currentTime = currentHours * 60 + currentMinutes;
+  
+  const [openH, openM] = shopStatus.openingTime.split(':').map(Number);
+  const [closeH, closeM] = shopStatus.closingTime.split(':').map(Number);
+  const openTime = openH * 60 + openM;
+  const closeTime = closeH * 60 + closeM;
+  
+  if (currentTime >= openTime && currentTime < closeTime) {
+    return { open: true, reason: 'schedule', message: 'Geöffnet' };
+  }
+  
+  return { 
+    open: false, 
+    reason: 'schedule', 
+    message: `Geschlossen · Öffnet um ${shopStatus.openingTime} Uhr`,
+    nextOpen: shopStatus.openingTime
+  };
+}
+
+// GET /api/shop/status - Public endpoint
+app.get('/api/shop/status', (req, res) => {
+  const status = isShopOpen();
+  res.json({
+    ...status,
+    openingTime: shopStatus.openingTime,
+    closingTime: shopStatus.closingTime,
+    manualOverride: shopStatus.manuallyOpen,
+    currentTime: new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })
+  });
+});
+
+// POST /api/admin/shop/toggle - Admin toggle
+app.post('/api/admin/shop/toggle', auth(['admin']), (req, res) => {
+  const { action } = req.body; // 'open', 'close', 'auto'
+  
+  if (action === 'open') {
+    shopStatus.manuallyOpen = true;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shop_manually_open', 'true')").run();
+  } else if (action === 'close') {
+    shopStatus.manuallyOpen = false;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shop_manually_open', 'false')").run();
+  } else {
+    shopStatus.manuallyOpen = null;
+    db.prepare("DELETE FROM settings WHERE key = 'shop_manually_open'").run();
+  }
+  
+  const status = isShopOpen();
+  console.log('🏪 Shop status changed:', action, status);
+  res.json({ success: true, ...status });
+});
+
+// PUT /api/admin/shop/hours - Update opening hours
+app.put('/api/admin/shop/hours', auth(['admin']), (req, res) => {
+  const { openingTime, closingTime } = req.body;
+  
+  if (openingTime) {
+    shopStatus.openingTime = openingTime;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('opening_time', ?)").run(openingTime);
+  }
+  if (closingTime) {
+    shopStatus.closingTime = closingTime;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('closing_time', ?)").run(closingTime);
+  }
+  
+  res.json({ 
+    success: true, 
+    openingTime: shopStatus.openingTime, 
+    closingTime: shopStatus.closingTime 
+  });
+});
+
+
+// ============ WAITLIST FOR OTHER CITIES ============
+
+// Create waitlist table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS waitlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    city TEXT NOT NULL,
+    postal_code TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    notified INTEGER DEFAULT 0,
+    UNIQUE(email, city)
+  )
+`);
+
+// POST /api/waitlist - Join waitlist for a city
+app.post('/api/waitlist', (req, res) => {
+  const { email, city, postalCode } = req.body;
+  
+  if (!email || !city) {
+    return res.status(400).json({ error: 'Email und Stadt erforderlich' });
+  }
+  
+  try {
+    db.prepare('INSERT OR IGNORE INTO waitlist (email, city, postal_code) VALUES (?, ?, ?)').run(email, city, postalCode || null);
+    console.log('📝 Waitlist signup:', email, 'for', city);
+    
+    // Send welcome email (async, don't wait)
+    emailService.sendEmail(email, 'Du bist auf der Warteliste! 🚀', emailService.waitlistEmail(email, city)).catch(() => {});
+    
+    res.json({ success: true, message: 'Du wirst benachrichtigt sobald wir in deiner Stadt starten!' });
+  } catch (e) {
+    res.status(400).json({ error: 'Bereits auf der Warteliste' });
+  }
+});
+
+// GET /api/admin/waitlist - Admin: See waitlist
+app.get('/api/admin/waitlist', auth(['admin']), (req, res) => {
+  const waitlist = db.prepare('SELECT * FROM waitlist ORDER BY created_at DESC').all();
+  res.json(waitlist);
+});
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });

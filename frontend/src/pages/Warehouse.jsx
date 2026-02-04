@@ -17,102 +17,491 @@ import {
   PencilIcon
 } from '@heroicons/react/24/outline';
 
-// Barcode Scanner Component
+// Barcode Scanner with AI Vision fallback
 function BarcodeScanner({ onScan, onClose }) {
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState(null);
-  const [hasCamera, setHasCamera] = useState(true);
+  const [manualInput, setManualInput] = useState('');
+  const [showManual, setShowManual] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [processingText, setProcessingText] = useState('');
+  const scannerRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const detectionCountRef = useRef({});
 
   useEffect(() => {
-    let html5QrCode = null;
     let mounted = true;
     
-    const startScanner = async () => {
+    const initScanner = async () => {
       try {
-        const { Html5Qrcode } = await import('html5-qrcode');
+        const Quagga = (await import('@ericblade/quagga2')).default;
         
         if (!mounted) return;
         
-        html5QrCode = new Html5Qrcode("barcode-reader");
+        Quagga.init({
+          inputStream: {
+            name: "Live",
+            type: "LiveStream",
+            target: scannerRef.current,
+            constraints: {
+              facingMode: "environment",
+              width: { min: 640, ideal: 1280, max: 1920 },
+              height: { min: 480, ideal: 720, max: 1080 },
+            },
+          },
+          locator: {
+            patchSize: "medium",
+            halfSample: true,
+          },
+          numOfWorkers: navigator.hardwareConcurrency || 4,
+          frequency: 10,
+          decoder: {
+            readers: [
+              "ean_reader",
+              "ean_8_reader", 
+              "upc_reader",
+              "upc_e_reader",
+              "code_128_reader",
+              "code_39_reader",
+              "i2of5_reader",
+            ],
+            multiple: false,
+          },
+          locate: true,
+        }, (err) => {
+          if (err) {
+            console.error('Quagga init error:', err);
+            if (mounted) setError('Kamera konnte nicht gestartet werden');
+            return;
+          }
+          
+          Quagga.start();
+          if (mounted) setScanning(true);
+        });
+
+        // Detection handler with verification (multiple reads = more confident)
+        Quagga.onDetected((result) => {
+          const code = result.codeResult.code;
+          if (!code) return;
+          
+          // Count detections for confidence
+          detectionCountRef.current[code] = (detectionCountRef.current[code] || 0) + 1;
+          
+          // Require 3 consistent reads for confidence
+          if (detectionCountRef.current[code] >= 3) {
+            console.log('✅ Barcode erkannt:', code);
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            Quagga.stop();
+            onScan(code);
+          }
+        });
         
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            qrbox: { width: 280, height: 160 },
-            aspectRatio: 1.777
-          },
-          (decodedText) => {
-            if (navigator.vibrate) navigator.vibrate(200);
-            onScan(decodedText);
-          },
-          () => {} // Ignore continuous errors
-        );
       } catch (err) {
         console.error('Scanner error:', err);
         if (mounted) {
-          setError('Kamera-Zugriff verweigert. Bitte erlaube den Kamera-Zugriff in deinen Browser-Einstellungen.');
-          setHasCamera(false);
+          setError('Kamera nicht verfügbar. Nutze Foto oder manuelle Eingabe.');
         }
       }
     };
-
-    startScanner();
-
+    
+    initScanner();
+    
     return () => {
       mounted = false;
-      if (html5QrCode) {
-        html5QrCode.stop().catch(() => {});
-      }
+      import('@ericblade/quagga2').then(({ default: Quagga }) => {
+        Quagga.stop();
+      }).catch(() => {});
     };
   }, [onScan]);
 
+  // Toggle torch
+  const toggleTorch = async () => {
+    try {
+      const Quagga = (await import('@ericblade/quagga2')).default;
+      const track = Quagga.CameraAccess.getActiveTrack();
+      if (track) {
+        const capabilities = track.getCapabilities?.();
+        if (capabilities?.torch) {
+          await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
+          setTorchOn(!torchOn);
+        } else {
+          alert('Taschenlampe nicht verfügbar auf diesem Gerät');
+        }
+      }
+    } catch (e) {
+      console.log('Torch error:', e);
+    }
+  };
+
+  // Convert file to base64
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+    });
+  };
+
+  // Capture current video frame and scan with AI
+  const captureAndScan = async () => {
+    if (!scanning) return;
+    
+    setProcessing(true);
+    setProcessingText('📸 Bild wird aufgenommen...');
+    
+    try {
+      const Quagga = (await import('@ericblade/quagga2')).default;
+      const track = Quagga.CameraAccess.getActiveTrack();
+      
+      if (!track) {
+        alert('Kamera nicht verfügbar');
+        setProcessing(false);
+        return;
+      }
+      
+      // Get video element from Quagga
+      const video = document.querySelector('#scanner-container video');
+      if (!video) {
+        alert('Video nicht gefunden');
+        setProcessing(false);
+        return;
+      }
+      
+      // Create canvas and capture frame
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      
+      const imageData = canvas.toDataURL('image/jpeg', 0.9);
+      console.log('Captured frame, size:', Math.round(imageData.length / 1024), 'KB');
+      
+      // First try Quagga on the captured frame
+      setProcessingText('🔍 Analysiere Barcode...');
+      
+      const blob = await (await fetch(imageData)).blob();
+      const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' });
+      const imageUrl = URL.createObjectURL(file);
+      
+      const quaggaResult = await new Promise((resolve) => {
+        Quagga.decodeSingle({
+          src: imageUrl,
+          numOfWorkers: 0,
+          decoder: {
+            readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader"],
+          },
+          locate: true,
+          locator: { patchSize: "large", halfSample: false },
+        }, resolve);
+      });
+      
+      URL.revokeObjectURL(imageUrl);
+      
+      if (quaggaResult?.codeResult?.code) {
+        console.log('✅ Quagga found:', quaggaResult.codeResult.code);
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        Quagga.stop();
+        setProcessing(false);
+        onScan(quaggaResult.codeResult.code);
+        return;
+      }
+      
+      // Quagga failed - try AI
+      setProcessingText('🤖 AI analysiert Bild...');
+      const aiResult = await scanWithAI(file);
+      
+      if (aiResult) {
+        console.log('✅ AI found:', aiResult);
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        Quagga.stop();
+        setProcessing(false);
+        onScan(aiResult);
+        return;
+      }
+      
+      setProcessing(false);
+      alert('Barcode nicht erkannt.\n\nTipps:\n• Halte das Produkt näher\n• Bessere Beleuchtung\n• Barcode gerade halten');
+      
+    } catch (err) {
+      console.error('Capture error:', err);
+      setProcessing(false);
+      alert('Fehler beim Scannen');
+    }
+  };
+
+  // AI Vision barcode recognition
+  const scanWithAI = async (file) => {
+    setProcessingText('🤖 AI analysiert Bild...');
+    
+    try {
+      const base64 = await fileToBase64(file);
+      
+      const response = await fetch('/api/ai/scan-barcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64 })
+      });
+      
+      const data = await response.json();
+      
+      if (data.barcode) {
+        return data.barcode;
+      }
+      return null;
+    } catch (err) {
+      console.error('AI scan error:', err);
+      return null;
+    }
+  };
+
+  // Photo scanning - Quagga first, then AI fallback
+  const handlePhotoCapture = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setProcessing(true);
+    setProcessingText('📷 Scanne Barcode...');
+    
+    try {
+      const Quagga = (await import('@ericblade/quagga2')).default;
+      const imageUrl = URL.createObjectURL(file);
+      
+      // Try Quagga first
+      const quaggaResult = await new Promise((resolve) => {
+        Quagga.decodeSingle({
+          src: imageUrl,
+          numOfWorkers: 0,
+          decoder: {
+            readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"],
+          },
+          locate: true,
+          locator: { patchSize: "large", halfSample: false },
+        }, resolve);
+      });
+      
+      URL.revokeObjectURL(imageUrl);
+      
+      if (quaggaResult?.codeResult?.code) {
+        console.log('✅ Quagga erkannt:', quaggaResult.codeResult.code);
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        Quagga.stop();
+        setProcessing(false);
+        onScan(quaggaResult.codeResult.code);
+        return;
+      }
+      
+      // Quagga failed - try AI Vision
+      console.log('Quagga fehlgeschlagen, versuche AI...');
+      const aiResult = await scanWithAI(file);
+      
+      if (aiResult) {
+        console.log('✅ AI erkannt:', aiResult);
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        Quagga.stop();
+        setProcessing(false);
+        onScan(aiResult);
+        return;
+      }
+      
+      // Both failed
+      setProcessing(false);
+      alert('Barcode nicht erkannt.\n\nTipps:\n• Besseres Licht\n• Barcode größer im Bild\n• Schärferes Foto\n\nOder manuell eingeben.');
+      
+    } catch (err) {
+      console.error('Photo scan error:', err);
+      setProcessing(false);
+      alert('Fehler beim Scannen.');
+    }
+  };
+
+  const handleManualSubmit = async () => {
+    if (manualInput.trim()) {
+      try {
+        const Quagga = (await import('@ericblade/quagga2')).default;
+        Quagga.stop();
+      } catch (e) {}
+      onScan(manualInput.trim());
+    }
+  };
+
+  const handleClose = async () => {
+    try {
+      const Quagga = (await import('@ericblade/quagga2')).default;
+      Quagga.stop();
+    } catch (e) {}
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 bg-black">
-      <div className="relative h-full flex flex-col">
-        <div className="absolute top-0 left-0 right-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-4 pt-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-white font-bold text-xl">Barcode scannen</h2>
-              <p className="text-white/60 text-sm">Halte den Barcode in den Rahmen</p>
-            </div>
-            <button onClick={onClose} className="p-3 bg-white/20 rounded-full backdrop-blur">
-              <XMarkIcon className="w-6 h-6 text-white" />
-            </button>
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+      {/* Header */}
+      <div className="bg-black p-4 flex items-center justify-between z-20">
+        <div>
+          <h2 className="text-white font-bold text-xl">Barcode scannen</h2>
+          <p className="text-white/70 text-sm">
+            {processing ? processingText || '⏳ Wird gescannt...' : 
+             scanning ? '📷 Barcode vor die Kamera halten' : 
+             error ? '⚠️ ' + error : 
+             '⏳ Kamera startet...'}
+          </p>
+        </div>
+        <button onClick={handleClose} className="p-3 bg-white/20 rounded-full">
+          <XMarkIcon className="w-6 h-6 text-white" />
+        </button>
+      </div>
+
+      {/* Scanner View */}
+      <div className="flex-1 relative bg-black overflow-hidden">
+        {/* Camera viewport */}
+        <div 
+          ref={scannerRef}
+          id="scanner-container"
+          className="absolute inset-0"
+          style={{ 
+            width: '100%', 
+            height: '100%',
+          }}
+        />
+        
+        {/* Overlay with scan area */}
+        <div className="absolute inset-0 pointer-events-none z-10">
+          {/* Darkened areas */}
+          <div className="absolute inset-0 bg-black/40" />
+          
+          {/* Clear scan area */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-72 h-36 bg-transparent border-0">
+            {/* Cut out the dark overlay */}
+            <div className="absolute inset-0" style={{ 
+              boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+            }} />
+            
+            {/* Corner markers */}
+            <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-rose-500 rounded-tl" />
+            <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-rose-500 rounded-tr" />
+            <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-rose-500 rounded-bl" />
+            <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-rose-500 rounded-br" />
+            
+            {/* Animated scan line */}
+            {scanning && (
+              <div className="absolute left-2 right-2 h-0.5 bg-rose-500" 
+                style={{ 
+                  animation: 'scanline 2s ease-in-out infinite',
+                  boxShadow: '0 0 8px rgba(244,63,94,0.8)'
+                }} 
+              />
+            )}
           </div>
         </div>
+        
+        {/* Torch button */}
+        <button 
+          onClick={toggleTorch}
+          className={`absolute top-4 right-4 z-20 p-4 rounded-full shadow-lg pointer-events-auto ${
+            torchOn ? 'bg-yellow-400 text-black' : 'bg-white/90 text-gray-800'
+          }`}
+        >
+          🔦
+        </button>
+        
+        {/* Help text */}
+        <div className="absolute bottom-4 left-0 right-0 text-center z-20">
+          <p className="text-white/80 text-sm">
+            Halte den Barcode ruhig in den Rahmen
+          </p>
+        </div>
+      </div>
 
-        <div id="barcode-reader" className="flex-1 w-full" />
-
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/90 p-6">
-            <div className="text-center max-w-sm">
-              <ExclamationTriangleIcon className="w-20 h-20 text-red-500 mx-auto mb-4" />
-              <p className="text-white text-lg mb-6">{error}</p>
-              <button onClick={onClose} className="px-8 py-3 bg-rose-500 text-white rounded-full font-medium">
-                Schließen
+      {/* Bottom Controls */}
+      <div className="bg-black p-4 space-y-3 z-20">
+        {showManual && (
+          <div className="bg-white rounded-2xl p-4">
+            <p className="text-sm text-gray-600 mb-2 font-medium">Barcode manuell eingeben:</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={manualInput}
+                onChange={(e) => setManualInput(e.target.value.replace(/[^0-9]/g, ''))}
+                onKeyDown={(e) => e.key === 'Enter' && handleManualSubmit()}
+                placeholder="z.B. 4000417025005"
+                className="flex-1 p-3 border-2 rounded-xl text-lg font-mono focus:border-rose-500 focus:outline-none"
+                autoFocus
+              />
+              <button 
+                onClick={handleManualSubmit}
+                disabled={!manualInput.trim()}
+                className="px-5 py-3 bg-rose-500 text-white rounded-xl font-bold disabled:opacity-50"
+              >
+                OK
               </button>
             </div>
           </div>
         )}
-
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-6 pt-12">
-          <div className="flex justify-center gap-4">
-            <button onClick={onClose} className="px-6 py-3 bg-white/20 text-white rounded-full backdrop-blur">
-              Abbrechen
-            </button>
-          </div>
+        
+        {/* Main scan button */}
+        {scanning && !showManual && (
+          <button 
+            onClick={captureAndScan}
+            disabled={processing}
+            className={`w-full py-4 mb-3 rounded-xl font-bold text-lg flex items-center justify-center gap-2 ${
+              processing ? 'bg-gray-500' : 'bg-green-500 active:bg-green-600'
+            } text-white`}
+          >
+            {processing ? processingText : '🎯 JETZT SCANNEN'}
+          </button>
+        )}
+        
+        <div className="flex justify-center gap-2">
+          <button onClick={handleClose} className="px-4 py-3 bg-gray-700 text-white rounded-full text-sm">
+            ✕
+          </button>
+          <label className={`px-4 py-3 bg-blue-500 text-white rounded-full text-sm font-medium cursor-pointer ${processing ? 'opacity-50' : ''}`}>
+            {processing ? '⏳' : '📸 Foto'}
+            <input 
+              type="file" 
+              accept="image/*" 
+              capture="environment" 
+              className="hidden" 
+              onChange={handlePhotoCapture}
+              disabled={processing}
+            />
+          </label>
+          <button 
+            onClick={() => setShowManual(!showManual)} 
+            className="px-4 py-3 bg-rose-500 text-white rounded-full text-sm font-medium"
+          >
+            {showManual ? '📷' : '⌨️'}
+          </button>
         </div>
       </div>
+      
+      {/* Scan animation */}
+      <style>{`
+        @keyframes scanline {
+          0%, 100% { top: 10%; }
+          50% { top: 85%; }
+        }
+        #scannerRef video {
+          width: 100% !important;
+          height: 100% !important;
+          object-fit: cover !important;
+        }
+      `}</style>
     </div>
   );
 }
 
-// Product Lookup Modal
+// Product Lookup Modal - Extended with more product details
 function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onManualAdd }) {
   const [loading, setLoading] = useState(!existingProduct);
   const [productInfo, setProductInfo] = useState(existingProduct || null);
   const [quantity, setQuantity] = useState(1);
   const [notFound, setNotFound] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
     if (!existingProduct) {
@@ -126,11 +515,13 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
     
     try {
       // Try Open Food Facts (best for food products in Germany)
-      const offRes = await fetch(`https://world.openfoodfacts.org/api/v0/product/${code}.json`);
+      const offRes = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_de,brands,image_front_url,image_url,categories_tags,quantity,serving_size,nutriments,ingredients_text_de,ingredients_text,nutriscore_grade,ecoscore_grade,nova_group,packaging,origins,countries,stores`);
       const offData = await offRes.json();
       
       if (offData.status === 1 && offData.product) {
         const p = offData.product;
+        const nutriments = p.nutriments || {};
+        
         setProductInfo({
           name: p.product_name_de || p.product_name || 'Unbekanntes Produkt',
           brand: p.brands || '',
@@ -138,7 +529,27 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
           category: mapCategory(p.categories_tags?.[0]) || 'Sonstiges',
           barcode: code,
           source: 'Open Food Facts',
-          quantity_info: p.quantity || ''
+          // Extended info
+          quantity_info: p.quantity || '', // e.g. "500ml", "250g"
+          serving_size: p.serving_size || '',
+          ingredients: p.ingredients_text_de || p.ingredients_text || '',
+          packaging: p.packaging || '',
+          origin: p.origins || '',
+          // Nutrition per 100g
+          nutrition: {
+            energy_kcal: nutriments['energy-kcal_100g'],
+            fat: nutriments.fat_100g,
+            saturated_fat: nutriments['saturated-fat_100g'],
+            carbs: nutriments.carbohydrates_100g,
+            sugar: nutriments.sugars_100g,
+            protein: nutriments.proteins_100g,
+            salt: nutriments.salt_100g,
+            fiber: nutriments.fiber_100g,
+          },
+          // Scores
+          nutriscore: p.nutriscore_grade?.toUpperCase(),
+          ecoscore: p.ecoscore_grade?.toUpperCase(),
+          nova: p.nova_group,
         });
         setLoading(false);
         return;
@@ -157,7 +568,8 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
             image: item.images?.[0] || null,
             category: 'Sonstiges',
             barcode: code,
-            source: 'UPC Database'
+            source: 'UPC Database',
+            description: item.description || '',
           });
           setLoading(false);
           return;
@@ -166,12 +578,86 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
         console.log('UPC lookup failed');
       }
 
+      // No database has this product - show not found but allow AI identification later
+      console.log('Product not found in any database, barcode:', code);
+      setProductInfo({
+        name: '',
+        brand: '',
+        image: null,
+        category: 'Sonstiges',
+        barcode: code,
+        source: 'Nicht gefunden',
+        needsManualEntry: true
+      });
       setNotFound(true);
     } catch (err) {
       console.error('Lookup error:', err);
       setNotFound(true);
     }
     setLoading(false);
+  };
+  
+  // AI product identification from captured image
+  const identifyWithAI = async () => {
+    setLoading(true);
+    try {
+      // We need to capture a new image or use a stored one
+      // For now, prompt user to take a photo
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.capture = 'environment';
+      
+      input.onchange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) {
+          setLoading(false);
+          return;
+        }
+        
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const response = await fetch('/api/ai/identify-product', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                image: reader.result,
+                barcode: barcode
+              })
+            });
+            
+            const data = await response.json();
+            
+            if (data.product) {
+              setProductInfo({
+                name: data.product.name || 'Unbekanntes Produkt',
+                brand: data.product.brand || '',
+                image: null,
+                category: data.product.category || 'Sonstiges',
+                barcode: barcode,
+                source: '🤖 AI erkannt',
+                description: data.product.description || '',
+                quantity_info: data.product.quantity_info || '',
+                price: data.product.estimated_price || null
+              });
+              setNotFound(false);
+            } else {
+              alert('AI konnte das Produkt nicht identifizieren.\nBitte manuell eingeben.');
+            }
+          } catch (err) {
+            console.error('AI identify error:', err);
+            alert('Fehler bei der AI-Erkennung');
+          }
+          setLoading(false);
+        };
+        reader.readAsDataURL(file);
+      };
+      
+      input.click();
+    } catch (err) {
+      setLoading(false);
+    }
   };
 
   const mapCategory = (tag) => {
@@ -203,72 +689,146 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
               <p className="text-sm text-gray-400 mt-2 font-mono">{barcode}</p>
             </div>
           ) : notFound ? (
-            <div className="text-center py-8">
-              <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <ExclamationTriangleIcon className="w-10 h-10 text-amber-600" />
+            <div className="text-center py-6">
+              <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                <ExclamationTriangleIcon className="w-8 h-8 text-amber-600" />
               </div>
-              <p className="font-bold text-lg mb-1">Produkt nicht gefunden</p>
-              <p className="text-sm text-gray-500 mb-6 font-mono">{barcode}</p>
-              <button
-                onClick={() => onManualAdd(barcode)}
-                className="w-full py-4 bg-rose-500 text-white rounded-xl font-semibold"
-              >
-                Manuell anlegen
-              </button>
+              <p className="font-bold text-lg mb-1">Produkt nicht in Datenbank</p>
+              <p className="text-sm text-gray-500 mb-1">Barcode erkannt:</p>
+              <p className="text-lg font-mono font-bold text-rose-600 mb-4">{barcode}</p>
+              
+              <p className="text-sm text-gray-600 mb-4">
+                Dieses Produkt ist nicht in Open Food Facts oder UPC Database.
+                <br/>Nutze AI-Erkennung oder gib es manuell ein.
+              </p>
+              
+              <div className="space-y-3">
+                <button
+                  onClick={identifyWithAI}
+                  className="w-full py-4 bg-blue-500 text-white rounded-xl font-semibold flex items-center justify-center gap-2"
+                >
+                  🤖 Mit AI erkennen (Foto)
+                </button>
+                <button
+                  onClick={() => onManualAdd(barcode)}
+                  className="w-full py-3 bg-gray-200 text-gray-700 rounded-xl font-medium"
+                >
+                  ✏️ Manuell eingeben
+                </button>
+              </div>
             </div>
           ) : (
             <>
-              <div className="flex gap-4 mb-6">
+              {/* Product Header */}
+              <div className="flex gap-4 mb-4">
                 {productInfo?.image ? (
-                  <img src={productInfo.image} alt="" className="w-24 h-24 object-cover rounded-xl bg-gray-100" />
+                  <img src={productInfo.image} alt="" className="w-20 h-20 object-cover rounded-xl bg-gray-100" />
                 ) : (
-                  <div className="w-24 h-24 bg-gray-100 rounded-xl flex items-center justify-center">
+                  <div className="w-20 h-20 bg-gray-100 rounded-xl flex items-center justify-center">
                     <CubeIcon className="w-10 h-10 text-gray-300" />
                   </div>
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="font-bold text-lg truncate">{productInfo?.name}</p>
-                  {productInfo?.brand && <p className="text-gray-500">{productInfo.brand}</p>}
-                  <p className="text-xs text-gray-400 mt-1 font-mono">{barcode}</p>
-                  {productInfo?.source && (
-                    <span className="inline-block mt-2 px-2 py-0.5 bg-rose-100 text-rose-600 text-xs rounded-full">
-                      {productInfo.source}
-                    </span>
+                  <p className="font-bold text-lg leading-tight">{productInfo?.name}</p>
+                  {productInfo?.brand && <p className="text-gray-500 text-sm">{productInfo.brand}</p>}
+                  {productInfo?.quantity_info && (
+                    <p className="text-rose-600 font-medium text-sm mt-1">{productInfo.quantity_info}</p>
                   )}
+                  <p className="text-xs text-gray-400 font-mono mt-1">{barcode}</p>
                 </div>
               </div>
 
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-3">Menge hinzufügen</label>
-                <div className="flex items-center justify-center gap-6">
-                  <button
-                    onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center active:bg-gray-200"
+              {/* Extended Product Info (collapsible) */}
+              {(productInfo?.nutrition || productInfo?.ingredients) && (
+                <div className="mb-4">
+                  <button 
+                    onClick={() => setShowDetails(!showDetails)}
+                    className="w-full py-2 text-sm text-rose-600 font-medium flex items-center justify-center gap-1"
                   >
+                    {showDetails ? '▲ Weniger Details' : '▼ Mehr Details anzeigen'}
+                  </button>
+                  
+                  {showDetails && (
+                    <div className="mt-2 p-3 bg-gray-50 rounded-xl text-sm space-y-3">
+                      {/* Scores */}
+                      {(productInfo.nutriscore || productInfo.ecoscore) && (
+                        <div className="flex gap-2">
+                          {productInfo.nutriscore && (
+                            <span className={`px-2 py-1 rounded font-bold text-white text-xs ${
+                              productInfo.nutriscore === 'A' ? 'bg-green-500' :
+                              productInfo.nutriscore === 'B' ? 'bg-lime-500' :
+                              productInfo.nutriscore === 'C' ? 'bg-yellow-500' :
+                              productInfo.nutriscore === 'D' ? 'bg-orange-500' : 'bg-red-500'
+                            }`}>
+                              Nutri-Score {productInfo.nutriscore}
+                            </span>
+                          )}
+                          {productInfo.ecoscore && (
+                            <span className={`px-2 py-1 rounded font-bold text-white text-xs ${
+                              productInfo.ecoscore === 'A' ? 'bg-green-500' :
+                              productInfo.ecoscore === 'B' ? 'bg-lime-500' :
+                              productInfo.ecoscore === 'C' ? 'bg-yellow-500' : 'bg-orange-500'
+                            }`}>
+                              Eco-Score {productInfo.ecoscore}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Nutrition Table */}
+                      {productInfo.nutrition && Object.values(productInfo.nutrition).some(v => v) && (
+                        <div>
+                          <p className="font-medium text-gray-700 mb-1">Nährwerte (pro 100g):</p>
+                          <div className="grid grid-cols-2 gap-1 text-xs">
+                            {productInfo.nutrition.energy_kcal && <div>Kalorien: <b>{Math.round(productInfo.nutrition.energy_kcal)} kcal</b></div>}
+                            {productInfo.nutrition.fat && <div>Fett: <b>{productInfo.nutrition.fat}g</b></div>}
+                            {productInfo.nutrition.carbs && <div>Kohlenhydrate: <b>{productInfo.nutrition.carbs}g</b></div>}
+                            {productInfo.nutrition.sugar && <div>Zucker: <b>{productInfo.nutrition.sugar}g</b></div>}
+                            {productInfo.nutrition.protein && <div>Eiweiß: <b>{productInfo.nutrition.protein}g</b></div>}
+                            {productInfo.nutrition.salt && <div>Salz: <b>{productInfo.nutrition.salt}g</b></div>}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Ingredients */}
+                      {productInfo.ingredients && (
+                        <div>
+                          <p className="font-medium text-gray-700 mb-1">Zutaten:</p>
+                          <p className="text-xs text-gray-600 line-clamp-3">{productInfo.ingredients}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Quantity Selector */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Menge hinzufügen</label>
+                <div className="flex items-center justify-center gap-4">
+                  <button onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
                     <MinusIcon className="w-6 h-6" />
                   </button>
                   <input
                     type="number"
                     value={quantity}
                     onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-24 text-center text-4xl font-bold border-b-2 border-rose-500 focus:outline-none"
+                    className="w-20 text-center text-3xl font-bold border-b-2 border-rose-500 focus:outline-none"
                   />
-                  <button
-                    onClick={() => setQuantity(quantity + 1)}
-                    className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center active:bg-gray-200"
-                  >
+                  <button onClick={() => setQuantity(quantity + 1)} className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
                     <PlusIcon className="w-6 h-6" />
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-5 gap-2 mb-6">
+              {/* Quick Quantity Buttons */}
+              <div className="grid grid-cols-5 gap-2 mb-4">
                 {[1, 5, 10, 20, 50].map(q => (
                   <button
                     key={q}
                     onClick={() => setQuantity(q)}
-                    className={`py-3 rounded-xl font-semibold transition-all ${
-                      quantity === q ? 'bg-rose-500 text-white scale-105' : 'bg-gray-100 text-gray-700'
+                    className={`py-2 rounded-lg font-semibold text-sm ${
+                      quantity === q ? 'bg-rose-500 text-white' : 'bg-gray-100 text-gray-700'
                     }`}
                   >
                     {q}
@@ -276,13 +836,20 @@ function ProductLookupModal({ barcode, existingProduct, onConfirm, onCancel, onM
                 ))}
               </div>
 
+              {/* Add Button */}
               <button
                 onClick={() => onConfirm({ ...productInfo, quantity })}
-                className="w-full py-4 bg-rose-500 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2 active:bg-rose-600"
+                className="w-full py-4 bg-rose-500 text-white rounded-xl font-bold flex items-center justify-center gap-2"
               >
-                <CheckCircleIcon className="w-6 h-6" />
-                {existingProduct ? 'Bestand erhöhen' : 'Hinzufügen'}
+                <CheckCircleIcon className="w-5 h-5" />
+                {existingProduct ? 'Bestand erhöhen' : 'Hinzufügen + zum Shop'}
               </button>
+              
+              {!existingProduct && (
+                <p className="text-xs text-gray-500 text-center mt-2">
+                  Produkt wird auch im Shop angelegt
+                </p>
+              )}
             </>
           )}
         </div>
@@ -402,6 +969,132 @@ function ManualAddModal({ barcode, onConfirm, onCancel }) {
   );
 }
 
+// Edit Inventory Modal with Image Upload
+function EditInventoryModal({ item, onSave, onCancel, token }) {
+  const [form, setForm] = useState({
+    name: item.name || '',
+    brand: item.brand || '',
+    category: item.category || 'Sonstiges',
+    price: item.price || '',
+    image: item.image || '',
+    min_stock: item.min_stock || 5
+  });
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const categories = ['Getränke', 'Snacks', 'Süßigkeiten', 'Obst & Gemüse', 'Milchprodukte', 'Tiefkühl', 'Haushalt', 'Pflege', 'Sonstiges'];
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('image', file);
+    
+    try {
+      const res = await fetch('/api/upload/product', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setForm({ ...form, image: data.url });
+      }
+    } catch (err) {
+      console.error('Upload failed:', err);
+    }
+    setUploading(false);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({ ...item, ...form });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center">
+      <div className="bg-white w-full sm:w-96 sm:rounded-2xl rounded-t-3xl max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white border-b px-4 py-3 flex items-center justify-between rounded-t-3xl">
+          <h3 className="font-bold text-lg">Produkt bearbeiten</h3>
+          <button onClick={onCancel} className="p-2 hover:bg-gray-100 rounded-full">
+            <XMarkIcon className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          {/* Image Upload */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Produktbild</label>
+            <div className="flex items-center gap-4">
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className="w-24 h-24 rounded-xl bg-gray-100 flex items-center justify-center cursor-pointer overflow-hidden border-2 border-dashed border-gray-300 hover:border-rose-500 transition-colors"
+              >
+                {uploading ? (
+                  <ArrowPathIcon className="w-8 h-8 text-rose-500 animate-spin" />
+                ) : form.image ? (
+                  <img src={form.image} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <CameraIcon className="w-8 h-8 text-gray-400" />
+                )}
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+              <div className="flex-1">
+                <p className="text-sm text-gray-600">Klicke zum Hochladen</p>
+                <p className="text-xs text-gray-400">JPG, PNG max. 5MB</p>
+                {form.image && (
+                  <button type="button" onClick={() => setForm({...form, image: ''})} className="text-xs text-red-500 mt-1">
+                    Bild entfernen
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <input type="text" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} className="w-full p-3 border rounded-xl" required />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Marke</label>
+            <input type="text" value={form.brand} onChange={(e) => setForm({...form, brand: e.target.value})} className="w-full p-3 border rounded-xl" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie</label>
+              <select value={form.category} onChange={(e) => setForm({...form, category: e.target.value})} className="w-full p-3 border rounded-xl bg-white">
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Preis (€)</label>
+              <input type="number" step="0.01" value={form.price} onChange={(e) => setForm({...form, price: e.target.value})} className="w-full p-3 border rounded-xl" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Min. Bestand (Warnung)</label>
+            <input type="number" value={form.min_stock} onChange={(e) => setForm({...form, min_stock: parseInt(e.target.value) || 5})} className="w-full p-3 border rounded-xl" />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onCancel} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium">
+              Abbrechen
+            </button>
+            <button type="submit" className="flex-1 py-3 bg-rose-500 text-white rounded-xl font-bold">
+              Speichern
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // Inventory Item Component
 const InventoryItem = memo(function InventoryItem({ item, onUpdateStock, onEdit, onDelete }) {
   const stockColor = item.stock === 0 ? 'text-red-500 border-red-500' : 
@@ -421,7 +1114,7 @@ const InventoryItem = memo(function InventoryItem({ item, onUpdateStock, onEdit,
           </div>
         )}
         
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
           <h3 className="font-semibold truncate">{item.name}</h3>
           {item.brand && <p className="text-sm text-gray-500 truncate">{item.brand}</p>}
           <p className="text-xs text-gray-400 font-mono mt-1">{item.barcode || '—'}</p>
@@ -438,6 +1131,9 @@ const InventoryItem = memo(function InventoryItem({ item, onUpdateStock, onEdit,
         <button onClick={() => onUpdateStock(item.id, -5)} disabled={item.stock < 5} className="flex-1 py-2 bg-red-50 text-red-600 rounded-lg font-medium text-sm disabled:opacity-40">-5</button>
         <button onClick={() => onUpdateStock(item.id, 5)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg font-medium text-sm">+5</button>
         <button onClick={() => onUpdateStock(item.id, 1)} className="flex-1 py-2 bg-green-50 text-green-600 rounded-lg font-medium text-sm">+1</button>
+        <button onClick={() => onEdit(item)} className="py-2 px-3 bg-blue-50 text-blue-600 rounded-lg">
+          <PencilIcon className="w-4 h-4" />
+        </button>
         <button onClick={() => onDelete(item.id)} className="py-2 px-3 bg-gray-100 text-gray-600 rounded-lg">
           <TrashIcon className="w-4 h-4" />
         </button>
@@ -457,6 +1153,7 @@ export default function Warehouse() {
   const [existingProduct, setExistingProduct] = useState(null);
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualBarcode, setManualBarcode] = useState('');
+  const [editItem, setEditItem] = useState(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [toast, setToast] = useState(null);
@@ -585,6 +1282,35 @@ export default function Warehouse() {
     }
   };
 
+  const handleEditSave = async (data) => {
+    try {
+      const res = await fetch(`/api/inventory/${data.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: data.name,
+          brand: data.brand,
+          category: data.category,
+          price: data.price,
+          image: data.image,
+          min_stock: data.min_stock
+        })
+      });
+      if (res.ok) {
+        showToast('Gespeichert!');
+        loadInventory();
+      } else {
+        showToast('Fehler beim Speichern', 'error');
+      }
+    } catch (err) {
+      showToast('Netzwerkfehler', 'error');
+    }
+    setEditItem(null);
+  };
+
   const filtered = inventory.filter(i => {
     if (search) {
       const q = search.toLowerCase();
@@ -693,6 +1419,7 @@ export default function Warehouse() {
               key={item.id} 
               item={item} 
               onUpdateStock={updateStock}
+              onEdit={setEditItem}
               onDelete={deleteItem}
             />
           ))
@@ -733,6 +1460,15 @@ export default function Warehouse() {
           barcode={manualBarcode}
           onConfirm={handleManualConfirm}
           onCancel={() => { setShowManualAdd(false); setManualBarcode(''); }}
+        />
+      )}
+
+      {editItem && (
+        <EditInventoryModal
+          item={editItem}
+          token={token}
+          onSave={handleEditSave}
+          onCancel={() => setEditItem(null)}
         />
       )}
 

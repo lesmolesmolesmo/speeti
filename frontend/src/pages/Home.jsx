@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo, memo } from 'react';
 import { Link } from 'react-router-dom';
-import { MapPin, Clock, ChevronRight, Search, Truck, ChevronLeft, Star, Zap, Gift, Percent, Shield, Headphones } from 'lucide-react';
+import { MapPin, Clock, ChevronRight, Search, Truck, ChevronLeft, Star, Zap, Gift, Percent, Shield, Headphones, Heart, AlertCircle, X, Bell } from 'lucide-react';
 import { Swiper, SwiperSlide } from 'swiper/react';
 import { Autoplay, Pagination, Navigation } from 'swiper/modules';
 import 'swiper/css';
@@ -107,23 +107,81 @@ const ProductRow = memo(({ title, products, link, icon: Icon }) => {
 ProductRow.displayName = 'ProductRow';
 
 export default function Home() {
-  const { categories, fetchCategories, selectedAddress, user } = useStore();
+  const { categories, fetchCategories, selectedAddress, user, favorites, shopStatus, fetchShopStatus } = useStore();
   const [allProducts, setAllProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
+  
+  // Location Modal State
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [showHoursModal, setShowHoursModal] = useState(false);
+  const [showCategoriesModal, setShowCategoriesModal] = useState(false);
+  const [locationInput, setLocationInput] = useState('');
+  const [locationError, setLocationError] = useState(null);
+  const [waitlistEmail, setWaitlistEmail] = useState('');
+  const [waitlistSubmitting, setWaitlistSubmitting] = useState(false);
+  const [waitlistSuccess, setWaitlistSuccess] = useState(false);
+  
+  // Check if location is in Münster
+  const isValidLocation = (input) => {
+    const lower = input.toLowerCase().trim();
+    // Check for Münster or PLZ starting with 48
+    return lower.includes('münster') || 
+           lower.includes('munster') || 
+           lower.includes('muenster') ||
+           /^48\d{3}/.test(lower);
+  };
+  
+  // Handle location submit
+  const handleLocationSubmit = () => {
+    if (!locationInput.trim()) return;
+    
+    if (isValidLocation(locationInput)) {
+      setShowLocationModal(false);
+      setLocationError(null);
+      setLocationInput('');
+    } else {
+      setLocationError(locationInput.trim());
+    }
+  };
+  
+  // Handle waitlist signup
+  const handleWaitlistSignup = async () => {
+    if (!waitlistEmail.trim() || !locationError) return;
+    
+    setWaitlistSubmitting(true);
+    try {
+      await api.post('/waitlist', {
+        email: waitlistEmail,
+        city: locationError,
+        postalCode: null
+      });
+      setWaitlistSuccess(true);
+    } catch (e) {
+      console.error('Waitlist error:', e);
+    } finally {
+      setWaitlistSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     if (dataLoaded) return;
     
     Promise.all([
       fetchCategories(),
-      api.get('/products')
+      api.get('/products'),
+      fetchShopStatus()
     ]).then(([_, productsRes]) => {
       setAllProducts(productsRes.data);
       setLoading(false);
       setDataLoaded(true);
     }).catch(() => setLoading(false));
-  }, [dataLoaded, fetchCategories]);
+  }, [dataLoaded, fetchCategories, fetchShopStatus]);
+
+  // Favorite products
+  const favoriteProducts = useMemo(() => {
+    return allProducts.filter(p => favorites.includes(p.id));
+  }, [allProducts, favorites]);
 
   const productsByCategory = useMemo(() => {
     return categories.map(cat => ({
@@ -156,23 +214,37 @@ export default function Home() {
       {/* Mobile Header */}
       <header className="lg:hidden bg-white sticky top-0 z-30 border-b border-gray-100">
         <div className="px-4 py-3">
-          {/* Location */}
+          {/* Location - Clickable */}
           <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setShowLocationModal(true)}
+              className="flex items-center gap-2 hover:bg-gray-50 rounded-xl p-1 -m-1 transition-colors"
+            >
               <div className="w-8 h-8 bg-rose-100 rounded-lg flex items-center justify-center">
                 <MapPin size={16} className="text-rose-500" />
               </div>
-              <div>
+              <div className="text-left">
                 <p className="text-xs text-gray-500">Lieferung nach</p>
-                <p className="text-sm font-semibold text-gray-900">
+                <p className="text-sm font-semibold text-gray-900 flex items-center gap-1">
                   {selectedAddress ? `${selectedAddress.street} ${selectedAddress.house_number}` : 'Münster'}
+                  <ChevronRight size={14} className="text-gray-400" />
                 </p>
               </div>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-100 px-3 py-1.5 rounded-full">
-              <Clock size={14} />
-              <span className="font-medium">15-20 min</span>
-            </div>
+            </button>
+            <button 
+              onClick={() => setShowHoursModal(true)}
+              className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-full transition-transform hover:scale-105 ${
+                shopStatus.open 
+                  ? 'bg-green-100 text-green-700' 
+                  : 'bg-amber-100 text-amber-700'
+              }`}
+            >
+              {shopStatus.open ? <Clock size={14} /> : <AlertCircle size={14} />}
+              <span className="font-medium">
+                {shopStatus.open ? '15-20 min' : 'Geschlossen'}
+              </span>
+              <ChevronRight size={14} className="opacity-50" />
+            </button>
           </div>
 
           {/* Search */}
@@ -252,12 +324,43 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Shop Closed Banner */}
+      {!shopStatus.open && (
+        <section className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto py-2">
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3">
+            <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <Clock size={20} className="text-amber-600" />
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-amber-800">{shopStatus.message}</p>
+              <p className="text-sm text-amber-600">
+                Öffnungszeiten: {shopStatus.openingTime} - {shopStatus.closingTime} Uhr
+                {shopStatus.open === false && ' · Du kannst trotzdem vorbestellen!'}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Welcome Banner for logged in users */}
       {user && (
         <section className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto py-4">
           <div className="bg-gradient-to-r from-rose-500 to-pink-500 rounded-2xl p-4 text-white">
             <p className="text-rose-100 text-sm">Willkommen zurück,</p>
             <p className="text-xl font-bold">{user.name}! 👋</p>
+          </div>
+        </section>
+      )}
+
+      {/* Favorites Section */}
+      {favoriteProducts.length > 0 && (
+        <section className="py-4 bg-gradient-to-r from-rose-50 to-pink-50">
+          <div className="lg:max-w-4xl lg:mx-auto">
+            <ProductRow 
+              title="Deine Favoriten" 
+              products={favoriteProducts}
+              icon={Heart}
+            />
           </div>
         </section>
       )}
@@ -411,6 +514,283 @@ export default function Home() {
           display: none;
         }
       `}</style>
+
+      {/* Opening Hours Modal */}
+      {showHoursModal && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-4 pb-20 sm:pb-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md max-h-[85vh] overflow-hidden animate-slideUp flex flex-col relative">
+            {/* Header with close button */}
+            <button
+              onClick={() => setShowHoursModal(false)}
+              className="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white z-10 transition-colors"
+            >
+              <X size={20} />
+            </button>
+            <div className={`p-6 text-center ${shopStatus.open ? 'bg-green-500' : 'bg-amber-500'}`}>
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                {shopStatus.open ? (
+                  <Clock size={32} className="text-white" />
+                ) : (
+                  <AlertCircle size={32} className="text-white" />
+                )}
+              </div>
+              <h2 className="text-2xl font-bold text-white">
+                {shopStatus.open ? 'Wir sind geöffnet! 🎉' : 'Aktuell geschlossen'}
+              </h2>
+              <p className="text-white/90 mt-1">
+                {shopStatus.open 
+                  ? 'Bestell jetzt und wir sind in 15-20 Min bei dir!'
+                  : `Öffnet wieder um ${shopStatus.openingTime || '08:00'} Uhr`
+                }
+              </p>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              {/* Opening Hours */}
+              <div className="bg-gray-50 rounded-2xl p-4">
+                <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                  <Clock size={18} className="text-rose-500" />
+                  Öffnungszeiten
+                </h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Montag - Sonntag</span>
+                    <span className="font-semibold text-gray-900">
+                      {shopStatus.openingTime || '08:00'} - {shopStatus.closingTime || '22:00'} Uhr
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Pre-order info when closed */}
+              {!shopStatus.open && (
+                <div className="bg-rose-50 rounded-2xl p-4">
+                  <h3 className="font-semibold text-rose-800 mb-2 flex items-center gap-2">
+                    <Gift size={18} className="text-rose-500" />
+                    Vorbestellungen möglich!
+                  </h3>
+                  <p className="text-sm text-rose-700">
+                    Du kannst trotzdem jetzt bestellen! Deine Bestellung wird dann direkt nach Öffnung um {shopStatus.openingTime || '08:00'} Uhr bearbeitet und zu dir geliefert.
+                  </p>
+                </div>
+              )}
+              
+              {/* Delivery info */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-gray-50 rounded-xl p-3 text-center">
+                  <Truck size={24} className="mx-auto mb-1 text-rose-500" />
+                  <p className="text-xs text-gray-500">Lieferzeit</p>
+                  <p className="font-semibold text-gray-900">15-20 Min</p>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 text-center">
+                  <MapPin size={24} className="mx-auto mb-1 text-rose-500" />
+                  <p className="text-xs text-gray-500">Liefergebiet</p>
+                  <p className="font-semibold text-gray-900">Münster</p>
+                </div>
+              </div>
+              
+              <button
+                onClick={() => setShowHoursModal(false)}
+                className="w-full py-4 bg-rose-500 text-white rounded-2xl font-semibold hover:bg-rose-600 transition-colors"
+              >
+                {shopStatus.open ? 'Jetzt bestellen 🚀' : 'Vorbestellen 📦'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Location Selection Modal */}
+      {showLocationModal && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-4 pb-20 sm:pb-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md max-h-[80vh] overflow-hidden animate-slideUp flex flex-col">
+            {/* Header with close button */}
+            <button
+              onClick={() => setShowHoursModal(false)}
+              className="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center text-white z-10 transition-colors"
+            >
+              <X size={20} />
+            </button>
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-gray-900">Liefergebiet wählen</h2>
+              <button 
+                onClick={() => {
+                  setShowLocationModal(false);
+                  setLocationError(null);
+                  setWaitlistSuccess(false);
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-4 space-y-4">
+              {!locationError ? (
+                <>
+                  <p className="text-gray-600 text-sm">
+                    Gib deine Stadt oder Postleitzahl ein, um zu prüfen ob wir liefern.
+                  </p>
+                  
+                  <div className="relative">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input
+                      type="text"
+                      placeholder="z.B. Münster oder 48149"
+                      value={locationInput}
+                      onChange={(e) => setLocationInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleLocationSubmit()}
+                      className="w-full pl-12 pr-4 py-4 bg-gray-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      autoFocus
+                    />
+                  </div>
+                  
+                  <button
+                    onClick={handleLocationSubmit}
+                    disabled={!locationInput.trim()}
+                    className="w-full py-4 bg-rose-500 text-white rounded-2xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-rose-600 transition-colors"
+                  >
+                    Prüfen
+                  </button>
+                  
+                  {/* Current location hint */}
+                  <div className="bg-green-50 rounded-xl p-4 flex items-start gap-3">
+                    <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                      <MapPin size={16} className="text-green-600" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-green-800">Aktuell in Münster</p>
+                      <p className="text-sm text-green-600">Wir liefern in ganz Münster (PLZ 48xxx)</p>
+                    </div>
+                  </div>
+                </>
+              ) : !waitlistSuccess ? (
+                <>
+                  {/* Not available message */}
+                  <div className="text-center py-4">
+                    <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <MapPin size={32} className="text-amber-600" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 mb-2">
+                      Noch nicht in {locationError}
+                    </h3>
+                    <p className="text-gray-600">
+                      Wir sind leider noch nicht in deiner Stadt verfügbar, aber wir arbeiten daran!
+                    </p>
+                  </div>
+                  
+                  {/* Waitlist Signup */}
+                  <div className="bg-rose-50 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Bell size={20} className="text-rose-500" />
+                      <span className="font-semibold text-rose-800">Lass dich benachrichtigen!</span>
+                    </div>
+                    <p className="text-sm text-rose-700">
+                      Trage deine E-Mail ein und wir informieren dich, sobald wir in {locationError} starten.
+                    </p>
+                    <input
+                      type="email"
+                      placeholder="deine@email.de"
+                      value={waitlistEmail}
+                      onChange={(e) => setWaitlistEmail(e.target.value)}
+                      className="w-full px-4 py-3 bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500"
+                    />
+                    <button
+                      onClick={handleWaitlistSignup}
+                      disabled={!waitlistEmail.includes('@') || waitlistSubmitting}
+                      className="w-full py-3 bg-rose-500 text-white rounded-xl font-semibold disabled:opacity-50 hover:bg-rose-600 transition-colors flex items-center justify-center gap-2"
+                    >
+                      {waitlistSubmitting ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          Wird eingetragen...
+                        </>
+                      ) : (
+                        <>
+                          <Bell size={18} />
+                          Benachrichtigen
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  <button
+                    onClick={() => setLocationError(null)}
+                    className="w-full py-3 text-gray-600 hover:text-gray-900"
+                  >
+                    ← Andere Stadt eingeben
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Success message */}
+                  <div className="text-center py-8">
+                    <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <span className="text-4xl">🎉</span>
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 mb-2">
+                      Du bist auf der Liste!
+                    </h3>
+                    <p className="text-gray-600">
+                      Wir benachrichtigen dich per E-Mail, sobald wir in <strong>{locationError}</strong> starten.
+                    </p>
+                  </div>
+                  
+                  <button
+                    onClick={() => {
+                      setShowLocationModal(false);
+                      setLocationError(null);
+                      setWaitlistSuccess(false);
+                      setWaitlistEmail('');
+                    }}
+                    className="w-full py-4 bg-rose-500 text-white rounded-2xl font-semibold hover:bg-rose-600 transition-colors"
+                  >
+                    Verstanden 👍
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Categories Modal */}
+      {showCategoriesModal && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-lg max-h-[85vh] overflow-hidden animate-slideUp">
+            {/* Header */}
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white z-10">
+              <h2 className="text-lg font-bold text-gray-900">Alle Kategorien</h2>
+              <button 
+                onClick={() => setShowCategoriesModal(false)}
+                className="p-2 hover:bg-gray-100 rounded-full"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            {/* Categories Grid */}
+            <div className="p-4 overflow-y-auto max-h-[70vh]">
+              <div className="grid grid-cols-3 gap-3">
+                {categories.map((cat) => (
+                  <Link
+                    key={cat.id}
+                    to={`/category/${cat.slug}`}
+                    onClick={() => setShowCategoriesModal(false)}
+                    className="flex flex-col items-center p-4 bg-gray-50 rounded-2xl hover:bg-rose-50 hover:ring-2 hover:ring-rose-200 transition-all group"
+                  >
+                    <span className="text-3xl mb-2 group-hover:scale-110 transition-transform">{cat.icon || '📦'}</span>
+                    <span className="text-xs font-medium text-gray-700 text-center leading-tight">{cat.name}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
