@@ -41,13 +41,22 @@ const heroSlides = [
   }
 ];
 
-// Feature Cards
-const features = [
-  { icon: Zap, title: "15 Min", subtitle: "Lieferung", color: "bg-amber-100 text-amber-600" },
-  { icon: Shield, title: "Sicher", subtitle: "Bezahlen", color: "bg-green-100 text-green-600" },
-  { icon: Headphones, title: "24/7", subtitle: "Support", color: "bg-blue-100 text-blue-600" },
-  { icon: Gift, title: "Promo", subtitle: "Codes", color: "bg-purple-100 text-purple-600" },
-];
+// Category Images for Visual Slider (Flink/Gorillas style)
+const categoryImages = {
+  'milch-kaese': 'https://images.unsplash.com/photo-1628088062854-d1870b4553da?w=200&h=200&fit=crop',
+  'fleisch-wurst': 'https://images.unsplash.com/photo-1607623814075-e51df1bdc82f?w=200&h=200&fit=crop',
+  'brot-backwaren': 'https://images.unsplash.com/photo-1509440159596-0249088772ff?w=200&h=200&fit=crop',
+  'haushalt': 'https://images.unsplash.com/photo-1563453392212-326f5e854473?w=200&h=200&fit=crop',
+  'baby-kind': 'https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=200&h=200&fit=crop',
+  'wasser': 'https://images.unsplash.com/photo-1548839140-29a749e1cf4d?w=200&h=200&fit=crop',
+  'softdrinks-cola': 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=200&h=200&fit=crop',
+  'bier': 'https://images.unsplash.com/photo-1535958636474-b021ee887b13?w=200&h=200&fit=crop',
+  'wein-sekt': 'https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=200&h=200&fit=crop',
+  'tiefkuehl': 'https://images.unsplash.com/photo-1560008581-09826d1de69e?w=200&h=200&fit=crop',
+  'suessigkeiten': 'https://images.unsplash.com/photo-1582058091505-f87a2e55a40f?w=200&h=200&fit=crop',
+  'snacks': 'https://images.unsplash.com/photo-1621939514649-280e2ee25f60?w=200&h=200&fit=crop',
+  'default': 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=200&h=200&fit=crop'
+};
 
 // ProductRow Component
 const ProductRow = memo(({ title, products, link, icon: Icon }) => {
@@ -315,17 +324,33 @@ export default function Home() {
         </Swiper>
       </section>
 
-      {/* Features Row */}
-      <section className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto py-2">
-        <div className="grid grid-cols-4 gap-2 lg:gap-4">
-          {features.map((f, i) => (
-            <div key={i} className="bg-white rounded-xl p-3 lg:p-4 text-center shadow-sm">
-              <div className={`w-10 h-10 lg:w-12 lg:h-12 ${f.color} rounded-xl flex items-center justify-center mx-auto mb-2`}>
-                <f.icon size={20} />
+      {/* Visual Category Slider (Flink/Gorillas style) */}
+      <section className="py-3">
+        <div 
+          className="flex gap-3 overflow-x-auto px-4 lg:px-0 lg:max-w-4xl lg:mx-auto pb-1 scrollbar-hide"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {categories.slice(0, 8).map((cat) => (
+            <Link
+              key={cat.id}
+              to={`/category/${cat.slug}`}
+              className="flex-shrink-0 group"
+            >
+              <div className="w-20 h-20 lg:w-24 lg:h-24 rounded-2xl overflow-hidden relative shadow-sm group-hover:shadow-md transition-shadow">
+                <img
+                  src={categoryImages[cat.slug] || categoryImages.default}
+                  alt={cat.name}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+                <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-2xl drop-shadow-lg">
+                  {cat.icon || '📦'}
+                </span>
               </div>
-              <p className="font-bold text-xs lg:text-sm text-gray-900">{f.title}</p>
-              <p className="text-[10px] lg:text-xs text-gray-500">{f.subtitle}</p>
-            </div>
+              <p className="text-xs font-medium text-gray-700 text-center mt-1.5 max-w-20 lg:max-w-24 truncate">
+                {cat.name}
+              </p>
+            </Link>
           ))}
         </div>
       </section>
