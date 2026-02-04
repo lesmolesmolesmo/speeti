@@ -494,14 +494,21 @@ export default function Home() {
         .hero-swiper .swiper-button-next,
         .hero-swiper .swiper-button-prev {
           color: white;
-          background: rgba(0,0,0,0.3);
-          width: 40px;
-          height: 40px;
+          background: rgba(0,0,0,0.15);
+          width: 28px;
+          height: 28px;
           border-radius: 50%;
+          opacity: 0.6;
+          transition: opacity 0.2s ease;
+        }
+        .hero-swiper .swiper-button-next:hover,
+        .hero-swiper .swiper-button-prev:hover {
+          opacity: 1;
+          background: rgba(0,0,0,0.25);
         }
         .hero-swiper .swiper-button-next::after,
         .hero-swiper .swiper-button-prev::after {
-          font-size: 16px;
+          font-size: 12px;
         }
         .deals-swiper .swiper-button-next,
         .deals-swiper .swiper-button-prev {
