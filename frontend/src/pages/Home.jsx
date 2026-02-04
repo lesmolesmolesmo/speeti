@@ -424,7 +424,12 @@ export default function Home() {
       {/* Category Icon Grid (Lieferando/Wolt style) */}
       <section className="py-6">
         <div className="px-4 lg:px-0 lg:max-w-4xl lg:mx-auto">
-          <h2 className="text-base font-bold text-gray-900 mb-4">Alle Kategorien</h2>
+          <div className="flex justify-between items-baseline mb-4">
+            <h2 className="text-base font-bold text-gray-900">Alle Kategorien</h2>
+            <Link to="/search" className="text-sm font-medium text-rose-500 hover:text-rose-600 flex items-center gap-1">
+              Alle anzeigen <ChevronRight size={14} />
+            </Link>
+          </div>
           <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
             {categories.slice(0, 20).map((cat) => (
               <Link
