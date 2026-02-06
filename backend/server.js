@@ -601,6 +601,24 @@ app.delete('/api/admin/categories/:id', auth(['admin']), (req, res) => {
 
 // ============ PRODUCTS ============
 
+// Helper to normalize search_keywords (fix malformed JSON strings)
+function normalizeSearchKeywords(product) {
+  if (product && product.search_keywords) {
+    // If it's a string, try to parse it or set to null
+    if (typeof product.search_keywords === 'string') {
+      try {
+        const parsed = JSON.parse(product.search_keywords);
+        product.search_keywords = Array.isArray(parsed) ? parsed : null;
+      } catch (e) {
+        product.search_keywords = null;
+      }
+    } else if (!Array.isArray(product.search_keywords)) {
+      product.search_keywords = null;
+    }
+  }
+  return product;
+}
+
 app.get('/api/products', (req, res) => {
   const { category, search, featured } = req.query;
   let sql = 'SELECT p.*, c.name as category_name FROM products p JOIN categories c ON p.category_id = c.id WHERE p.in_stock = 1';
@@ -619,14 +637,14 @@ app.get('/api/products', (req, res) => {
   }
   
   sql += ' ORDER BY p.created_at DESC, p.sort_order, p.id DESC';
-  const products = db.prepare(sql).all(...params);
+  const products = db.prepare(sql).all(...params).map(normalizeSearchKeywords);
   res.json(products);
 });
 
 app.get('/api/products/:id', (req, res) => {
   const product = db.prepare('SELECT p.*, c.name as category_name FROM products p JOIN categories c ON p.category_id = c.id WHERE p.id = ?').get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Produkt nicht gefunden' });
-  res.json(product);
+  res.json(normalizeSearchKeywords(product));
 });
 
 app.post('/api/admin/products', auth(['admin']), (req, res) => {
@@ -2963,7 +2981,7 @@ function generateSlug(name, id) {
 app.get('/api/products/slug/:slug', (req, res) => {
   const product = db.prepare('SELECT p.*, c.name as category_name, c.slug as category_slug FROM products p JOIN categories c ON p.category_id = c.id WHERE p.slug = ?').get(req.params.slug);
   if (!product) return res.status(404).json({ error: 'Produkt nicht gefunden' });
-  res.json(product);
+  res.json(normalizeSearchKeywords(product));
 });
 
 // ============ REVIEWS ============
