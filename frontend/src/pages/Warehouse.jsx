@@ -1173,9 +1173,15 @@ export default function Warehouse() {
       const res = await fetch('/api/inventory', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) setInventory(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setInventory(Array.isArray(data) ? data : []);
+      } else {
+        setInventory([]);
+      }
     } catch (err) {
       console.error('Load inventory error:', err);
+      setInventory([]);
     }
     setLoading(false);
   };
@@ -1188,7 +1194,8 @@ export default function Warehouse() {
   const handleScan = useCallback((barcode) => {
     setShowScanner(false);
     // Check if product already exists
-    const existing = inventory.find(i => i.barcode === barcode);
+    const invArray = Array.isArray(inventory) ? inventory : [];
+    const existing = invArray.find(i => i.barcode === barcode);
     if (existing) {
       setExistingProduct(existing);
     }
@@ -1313,7 +1320,9 @@ export default function Warehouse() {
     setEditItem(null);
   };
 
-  const filtered = inventory.filter(i => {
+  const safeInventory = Array.isArray(inventory) ? inventory : [];
+  
+  const filtered = safeInventory.filter(i => {
     if (search) {
       const q = search.toLowerCase();
       if (!i.name?.toLowerCase().includes(q) && !i.barcode?.includes(q) && !i.brand?.toLowerCase().includes(q)) return false;
@@ -1324,10 +1333,10 @@ export default function Warehouse() {
   });
 
   const stats = {
-    total: inventory.length,
-    totalStock: inventory.reduce((s, i) => s + (i.stock || 0), 0),
-    low: inventory.filter(i => i.stock > 0 && i.stock <= 10).length,
-    out: inventory.filter(i => i.stock === 0).length
+    total: safeInventory.length,
+    totalStock: safeInventory.reduce((s, i) => s + (i.stock || 0), 0),
+    low: safeInventory.filter(i => i.stock > 0 && i.stock <= 10).length,
+    out: safeInventory.filter(i => i.stock === 0).length
   };
 
   if (!_hasHydrated) return <div className='min-h-screen flex items-center justify-center'><div className='w-8 h-8 border-4 border-rose-500 border-t-transparent rounded-full animate-spin'></div></div>;
