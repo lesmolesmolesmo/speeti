@@ -1175,7 +1175,9 @@ export default function Warehouse() {
       });
       if (res.ok) {
         const data = await res.json();
-        setInventory(Array.isArray(data) ? data : []);
+        // Handle both array and object responses (API might return {} when empty)
+        const items = Array.isArray(data) ? data : (data && typeof data === 'object' ? Object.values(data) : []);
+        setInventory(Array.isArray(items) ? items : []);
       } else {
         setInventory([]);
       }
